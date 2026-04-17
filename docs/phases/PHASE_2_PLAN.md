@@ -287,10 +287,88 @@ green (11 pre-existing + 3 new), 25/25 vitest green, `tsc --noEmit` clean,
 - Dynamic pipeline: skip/simplify states based on profile
 - Profile-specific review gate configuration
 
-## Task 2.7: Bid Workspace in Obsidian
+## Task 2.7: Bid Workspace in Obsidian — **DONE 2026-04-18**
 - Auto-create bid folder structure when bid starts
 - AI output writes to vault as markdown
-- Bi-directional sync: vault changes -> re-index
+- Bi-directional sync: vault changes -> re-index — *deferred to Phase 3 (multi-tenant isolation required)*
+
+### DELIVERED
+
+**Scope shipped:** every Temporal workflow phase emits a markdown snapshot of
+the bid's current `BidState` into `<vault>/bids/<bid_id>/` via a new
+best-effort `workspace_snapshot_activity`. Obsidian users get a live
+view of the pipeline: one file per phase + a reviews subfolder for
+multi-round gates + an `index.md` hub with wiki-links to every populated
+artifact.
+
+**Design delta from plan:** adopted a **flat** layout (`NN-<phase>.md` at
+the bid root + a single `09-reviews/` subfolder) instead of 11 nested
+phase directories. Reason: Obsidian's file-tree UX is materially better
+when you don't have a directory per single file, and the `NN-` prefix
+still sorts chronologically. The `kb-vault/bids/` tree is **not** re-ingested
+into Qdrant for this phase — multi-tenant isolation needs more thought
+(a client's in-progress bid shouldn't leak into another client's RAG
+context). Phase 3 will revisit with proper access-control metadata.
+
+**New files:**
+- `src/ai-service/kb_writer/__init__.py`
+- `src/ai-service/kb_writer/models.py` — `WorkspaceInput` (Temporal
+  activity arg) + `WorkspaceReceipt` (return payload: files_written /
+  files_skipped / errors).
+- `src/ai-service/kb_writer/templates.py` — 15 render functions
+  (bid_card, triage, scoping, ba, sa, domain, convergence, hld, wbs,
+  pricing, proposal, review, submission, retrospective, index) using
+  plain f-strings + `textwrap.dedent` + `python-frontmatter` to emit
+  `kind: bid_output` + `bid_id` + `phase` + `artifact` + `generated_at`
+  frontmatter on every file.
+- `src/ai-service/kb_writer/bid_workspace.py` — `ensure_workspace`
+  (idempotent folder scaffold) + `write_snapshot` (dispatches the
+  appropriate renderer for each populated field in `BidState`, writes
+  atomically via `tempfile.mkstemp` + `os.replace`, returns a receipt).
+- `src/ai-service/activities/bid_workspace.py` — Temporal wrapper
+  `workspace_snapshot_activity`; catches any exception and logs a warning
+  rather than failing the workflow (bid completion > vault completeness).
+- `src/ai-service/tests/test_kb_writer.py` — 5 tests covering
+  frontmatter contract + content for BA / Convergence / Proposal / Index
+  + bid-card sanity.
+- `src/ai-service/tests/test_bid_workspace.py` — 4 tmp_path integration
+  tests (scaffold dirs, full S11_DONE snapshot writes 15 files, skip
+  None artifacts, repeat-call idempotency).
+
+**Modified files:**
+- `src/ai-service/workflows/bid_workflow.py` — calls
+  `_snapshot_workspace(phase)` after every `_run_sN_*` helper (11 call
+  sites + the S1_NO_BID terminal). The helper wraps
+  `workflow.execute_activity(workspace_snapshot_activity, …)` with a
+  30s `start_to_close_timeout`, 2-attempt retry policy, and a
+  try/except that logs + swallows any failure.
+- `src/ai-service/worker.py` — registers
+  `workspace_snapshot_activity`.
+- `src/ai-service/tests/test_workflow.py` — includes the workspace
+  activity in `_ALL_ACTIVITIES` so the existing 5 workflow tests keep
+  executing the full phase sequence.
+- `src/ai-service/tests/conftest.py` — new autouse fixture
+  `_sandbox_kb_vault` redirects `KB_VAULT_PATH` to `tmp_path` per test +
+  clears `get_ingestion_settings` cache, keeping workflow tests hermetic.
+- `src/ai-service/pyproject.toml` — `python-frontmatter ^1.1.0` dep
+  (added alongside the Phase 2.3 pypdf deps).
+
+**Test results:** 9 new pytest (5 kb_writer + 4 bid_workspace) green;
+existing 57 pytest still green — total **66/66**. Integration test
+correctly deselected.
+
+**Known gaps carried forward:**
+- `kb-vault/bids/` is excluded from ingestion. Phase 3 needs to add
+  multi-tenant filtering (per-client `tenant_id` on Qdrant payload +
+  on the kb_search filter contract) before these files can be safely
+  surfaced to prior-bid RAG queries.
+- Obsidian-side edits to `bids/<id>/*.md` are not round-tripped back
+  into workflow state — files are render-only. If a reviewer amends
+  `03-ba.md` directly, the next snapshot overwrites it. The
+  retrospective activity is the planned bi-directional hook in
+  Phase 3.4.
+- No template customisation surface — f-strings live in code.
+  Customer-branded proposal templates will move to Jinja in Phase 3.1.
 
 ---
 

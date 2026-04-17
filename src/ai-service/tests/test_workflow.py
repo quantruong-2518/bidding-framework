@@ -13,6 +13,7 @@ from temporalio.worker import Worker
 
 from activities.assembly import assembly_activity
 from activities.ba_analysis import ba_analysis_activity
+from activities.bid_workspace import workspace_snapshot_activity
 from activities.commercial import commercial_activity
 from activities.convergence import convergence_activity
 from activities.domain_mining import domain_mining_activity
@@ -48,6 +49,7 @@ _ALL_ACTIVITIES = [
     review_activity,
     submission_activity,
     retrospective_activity,
+    workspace_snapshot_activity,
 ]
 
 _RFP_TEXT = (

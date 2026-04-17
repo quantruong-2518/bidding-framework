@@ -25,6 +25,7 @@ _NIL_UUID = UUID(int=0)
 with workflow.unsafe.imports_passed_through():
     from activities.assembly import assembly_activity
     from activities.ba_analysis import ba_analysis_activity
+    from activities.bid_workspace import workspace_snapshot_activity
     from activities.commercial import commercial_activity
     from activities.convergence import convergence_activity
     from activities.domain_mining import domain_mining_activity
@@ -37,6 +38,7 @@ with workflow.unsafe.imports_passed_through():
     from activities.submission import submission_activity
     from activities.triage import triage_activity
     from activities.wbs import wbs_activity
+    from kb_writer.models import WorkspaceInput
     from workflows.artifacts import (
         AssemblyInput,
         BusinessRequirementsDraft,
@@ -81,6 +83,16 @@ _DEFAULT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1),
     maximum_interval=timedelta(seconds=30),
     maximum_attempts=3,
+    backoff_coefficient=2.0,
+)
+
+# Vault-snapshot writes are best-effort: bid completion must not block on
+# filesystem issues. Short timeout + at most one retry.
+_WORKSPACE_TIMEOUT = timedelta(seconds=30)
+_WORKSPACE_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=1),
+    maximum_interval=timedelta(seconds=5),
+    maximum_attempts=2,
     backoff_coefficient=2.0,
 )
 
@@ -143,24 +155,37 @@ class BidWorkflow:
     @workflow.run
     async def run(self, wf_input: BidWorkflowInput) -> BidState:
         await self._run_s0(wf_input)
+        await self._snapshot_workspace("S0_DONE")
         await self._run_s1_triage()
+        await self._snapshot_workspace("S1_DONE")
 
         gate_ok = await self._wait_human_gate()
         if not gate_ok:
+            await self._snapshot_workspace("S1_NO_BID")
             return self._snapshot()
 
         await self._run_s2_scoping()
+        await self._snapshot_workspace("S2_DONE")
         await self._run_s3_streams()
+        await self._snapshot_workspace("S3_DONE")
         await self._run_s4_convergence()
+        await self._snapshot_workspace("S4_DONE")
         await self._run_s5_solution_design()
+        await self._snapshot_workspace("S5_DONE")
         await self._run_s6_wbs()
+        await self._snapshot_workspace("S6_DONE")
         await self._run_s7_commercial()
+        await self._snapshot_workspace("S7_DONE")
         await self._run_s8_assembly()
+        await self._snapshot_workspace("S8_DONE")
         await self._run_s9_review()
+        await self._snapshot_workspace("S9_DONE")
         await self._run_s10_submission()
+        await self._snapshot_workspace("S10_DONE")
         await self._run_s11_retrospective()
 
         self._state = "S11_DONE"
+        await self._snapshot_workspace("S11_DONE")
         return self._snapshot()
 
     # --- S0 / S1 / S2 (Phase 1 logic — kept intact) --------------------------
@@ -401,6 +426,26 @@ class BidWorkflow:
         )
 
     # --- helpers ------------------------------------------------------------
+
+    async def _snapshot_workspace(self, phase: str) -> None:
+        """Best-effort per-phase vault write. Failures are logged, never fatal."""
+        if self._bid_card is None:
+            return
+        try:
+            await workflow.execute_activity(
+                workspace_snapshot_activity,
+                WorkspaceInput(
+                    vault_root="",  # activity falls back to KB_VAULT_PATH
+                    phase=phase,
+                    bid_state=self._snapshot(),
+                ),
+                start_to_close_timeout=_WORKSPACE_TIMEOUT,
+                retry_policy=_WORKSPACE_RETRY,
+            )
+        except Exception as exc:  # noqa: BLE001 — vault issues never block the workflow
+            workflow.logger.warning(
+                "workspace_snapshot.ignored phase=%s err=%s", phase, exc
+            )
 
     def _snapshot(self) -> BidState:
         """Materialise the current snapshot (used by `run` return + NO_BID path)."""

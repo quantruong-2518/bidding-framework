@@ -19,6 +19,12 @@ kb-vault/
   technologies/                   # tech topic notes (microservices, k8s, temporal-io, …)
   templates/                      # reusable skeletons (WBS, HLD, proposal)
   lessons/                        # lessons learned — estimation pitfalls, integration risks, …
+  bids/<bid_id>/                  # Phase 2.7 — per-bid workspace written by
+                                  # `workspace_snapshot_activity` after each workflow phase.
+                                  # Flat layout, NN-<phase>.md + a single 09-reviews/ subfolder.
+                                  # Frontmatter: `kind: bid_output` + bid_id + phase + artifact +
+                                  # generated_at. NOT re-ingested into Qdrant in Phase 2 —
+                                  # multi-tenant isolation arrives in Phase 3.
 ```
 
 ## Note conventions (REQUIRED for ingestion)

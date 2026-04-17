@@ -3,20 +3,37 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-17 (Phase 2.3 delivery — RFP parser MVP)
+## Last Updated: 2026-04-18 (Phase 2.3 + 2.7 delivery — Conv-3 pair)
 
-## Overall Status: PHASE 2.3 COMPLETE — Phase 2.7 up next in the same Conv-3 pair
+## Overall Status: PHASE 2.3 + 2.7 COMPLETE — next pair = Phase 2.4 + 2.6 (human approval + profile routing)
 
 ## >>> NEXT ACTION <<<
-**Phase 2.7: Per-bid Obsidian workspace** (in-progress same conversation)
-- `kb_writer/` module + `workspace_snapshot_activity` writing flat `kb-vault/bids/{bid_id}/NN-*.md` layout after each workflow phase.
-- 14 markdown templates (one per artifact type) with `kind: bid_output` frontmatter.
-- Skip ingestion filtering in this pass — Phase 3 will revisit with multi-tenant isolation.
+**Phase 2.4 + 2.6 (pair): Human approval flow + Bid Profile routing**
+- Both touch workflow gates, pair naturally per `project_phase_2_roadmap.md`.
+- 2.4: extend `human_triage_decision` pattern to S9 review gate; real reject/changes-requested loop-back (S9 → S8/S6/S5/S2); in-app WS notification on approval need.
+- 2.6: conditional skip/simplify S/M/L/XL pipelines — S profile skips S3c, S7 etc. Reuse `bid_card.estimated_profile` as the gate.
+- Zero LLM cost; low infra risk.
+
+**Optional intermediate step (live-LLM smoke for 2.2):**
+- Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker`.
+- `pytest -m integration -v` (exercises real BA/SA/Domain agents).
+- Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` no longer starts with `"Stub BA summary"`.
 
 **Optional intermediate step (live-LLM smoke for 2.2):**
 - Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker` (rebuild both — see `project_docker_image_split.md`).
 - Run the gated integration test: `pytest -m integration -v` (exercises real BA/SA/Domain agents).
 - Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` should no longer start with `"Stub BA summary"`.
+
+### Phase 2.7 Delivery Summary (2026-04-18)
+**Scope:** per-bid Obsidian workspace under `kb-vault/bids/{bid_id}/`. `workspace_snapshot_activity` fires after every workflow phase; writes are best-effort (bid completion > vault completeness).
+
+**Design delta:** flat layout (`NN-<phase>.md` + single `09-reviews/` subfolder) instead of 11 nested phase dirs — better Obsidian file-tree UX. `kind: bid_output` frontmatter tags every file. Vault NOT re-ingested into Qdrant — Phase 3 adds multi-tenant isolation before enabling RAG over prior bids.
+
+**New files:** `src/ai-service/kb_writer/{__init__,models,templates,bid_workspace}.py`; `activities/bid_workspace.py`; `tests/test_kb_writer.py` (5 tests); `tests/test_bid_workspace.py` (4 tests, tmp_path).
+
+**Modified:** `workflows/bid_workflow.py` (11 snapshot call sites + `_snapshot_workspace` helper); `worker.py` (register workspace activity); `tests/test_workflow.py` (add to `_ALL_ACTIVITIES`); `tests/conftest.py` (`_sandbox_kb_vault` autouse → `KB_VAULT_PATH` per-test tmp).
+
+**Tests:** 66 pytest (57 + 9 new), 14 Jest, 25 vitest — all green.
 
 ### Phase 2.3 Delivery Summary (2026-04-17)
 **Scope:** upload PDF/DOCX RFP → ParsedRFP → suggested BidCard pre-fill. No LLM, no new Docker service.
@@ -176,6 +193,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | 2.1 | Complete 11-state DAG in Temporal | DONE | 11 deterministic stubs wired via asyncio.gather for S3; workflow reaches S11_DONE end-to-end |
 | 2.2 | Parallel agent execution (S3a, S3b, S3c) | DONE (deterministic-first) | Real BA/SA/Domain LangGraph agents + heuristic S4 convergence shipped. Each activity falls back to its stub until `ANTHROPIC_API_KEY` is set. 44/44 pytest pass; 1 integration test deselected |
 | 2.3 | Document parsing pipeline | DONE (pypdf MVP) | PDF + DOCX → ParsedRFP + BidCard suggestion. pypdf + python-docx (no Unstructured.io container); gateway proxy + frontend drop-zone; 13 new pytest + 3 new Jest |
+| 2.7 | Bid workspace in Obsidian | DONE | Flat `kb-vault/bids/{bid_id}/NN-*.md` layout; `workspace_snapshot_activity` after each phase; 15 render funcs with `kind: bid_output` frontmatter; best-effort (never blocks bid). Re-ingestion deferred to Phase 3 |
 | 2.4 | Human approval flow (Temporal signals) | NOT STARTED | S1 triage signal already exists as pattern; extend to S9 review gate |
 | 2.5 | Real-time updates (SSE + WebSocket) | NOT STARTED | Redis + socket.io scaffold in place; needs agent-stream integration |
 | 2.6 | Bid Profile routing (S/M/L/XL) | NOT STARTED | Scoping already emits profile; workflow needs conditional skips |

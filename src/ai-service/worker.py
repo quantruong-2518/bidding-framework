@@ -13,6 +13,7 @@ from temporalio.worker import Worker
 
 from activities.assembly import assembly_activity
 from activities.ba_analysis import ba_analysis_activity
+from activities.bid_workspace import workspace_snapshot_activity
 from activities.commercial import commercial_activity
 from activities.convergence import convergence_activity
 from activities.domain_mining import domain_mining_activity
@@ -75,6 +76,8 @@ async def _run() -> None:
             review_activity,
             submission_activity,
             retrospective_activity,
+            # Per-bid vault writer — called after every phase completes.
+            workspace_snapshot_activity,
         ],
     )
 

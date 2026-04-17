@@ -83,6 +83,9 @@ ai-service/
     domain_mining.py         # S3c real wrapper: runs agents/domain_agent.py; same fallback gate.
     convergence.py           # S4: merges stream outputs, emits heuristic cross-stream conflicts
                              # (API-layer / compliance / NFR) + weighted readiness gate 0.80.
+    bid_workspace.py         # workspace_snapshot_activity — best-effort per-phase markdown
+                             # write to kb-vault/bids/{bid_id}/. Catches all exceptions so
+                             # vault issues never fail the workflow.
     solution_design.py       # S5 stub — HLD skeleton from SA draft + convergence report.
     wbs.py                   # S6 stub — default WBS template, effort biased by BA MUSTs.
     commercial.py            # S7 stub — fixed-price advisory model (blended day rate).
@@ -107,6 +110,17 @@ ai-service/
   tools/
     claude_client.py         # AsyncAnthropic wrapper with cache_control: ephemeral (prompt caching)
     kb_search.py             # Qdrant search wrapper; degrades to [] on error
+
+  parsers/                   # Phase 2.3 — RFP → ParsedRFP → BidCardSuggestion.
+    models.py                # ParsedRFP, Section, TableBlob, BidCardSuggestion, ParseResponse.
+    pypdf_adapter.py         # PDF → ParsedRFP (regex heading classifier + ascii-pipe tables).
+    docx_adapter.py          # DOCX → ParsedRFP (Word paragraph styles for headings).
+    rfp_extractor.py         # Heuristic mapper: industry/region dicts + modal-verb requirements.
+
+  kb_writer/                 # Phase 2.7 — BidState → per-bid Obsidian markdown workspace.
+    models.py                # WorkspaceInput (activity arg) + WorkspaceReceipt (return).
+    templates.py             # 15 render_* funcs, f-string + textwrap.dedent + frontmatter.
+    bid_workspace.py         # ensure_workspace + write_snapshot (atomic file writes).
 
   rag/
     embeddings.py            # fastembed (bge-small + BM25) providers

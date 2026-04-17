@@ -32,3 +32,24 @@ def _force_llm_fallback_by_default(request, monkeypatch):
         yield
     finally:
         get_claude_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_kb_vault(tmp_path, monkeypatch):
+    """Redirect per-bid vault writes into pytest's tmp_path so workflow tests stay hermetic.
+
+    The `workspace_snapshot_activity` falls back to `KB_VAULT_PATH` when the
+    workflow passes an empty `vault_root`; we point that env var at a fresh
+    tmp dir per test and clear the ingestion-settings cache so the activity
+    re-reads it.
+    """
+    from config.ingestion import get_ingestion_settings
+
+    sandbox = tmp_path / "kb-vault-sandbox"
+    sandbox.mkdir(exist_ok=True)
+    monkeypatch.setenv("KB_VAULT_PATH", str(sandbox))
+    get_ingestion_settings.cache_clear()
+    try:
+        yield sandbox
+    finally:
+        get_ingestion_settings.cache_clear()
