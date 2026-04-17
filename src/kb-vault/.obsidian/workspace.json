@@ -1,0 +1,10 @@
+{
+  "main": {
+    "id": "kb-vault-root",
+    "type": "split",
+    "children": [],
+    "direction": "vertical"
+  },
+  "active": "kb-vault-root",
+  "lastOpenFiles": []
+}
