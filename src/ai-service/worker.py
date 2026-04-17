@@ -12,18 +12,16 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from activities.assembly import assembly_activity
+from activities.ba_analysis import ba_analysis_activity
 from activities.commercial import commercial_activity
 from activities.convergence import convergence_activity
+from activities.domain_mining import domain_mining_activity
 from activities.intake import intake_activity
 from activities.retrospective import retrospective_activity
 from activities.review import review_activity
+from activities.sa_analysis import sa_analysis_activity
 from activities.scoping import scoping_activity
 from activities.solution_design import solution_design_activity
-from activities.stream_stubs import (
-    ba_analysis_stub_activity,
-    domain_mining_stub_activity,
-    sa_analysis_stub_activity,
-)
 from activities.submission import submission_activity
 from activities.triage import triage_activity
 from activities.wbs import wbs_activity
@@ -63,11 +61,12 @@ async def _run() -> None:
             intake_activity,
             triage_activity,
             scoping_activity,
-            # S3a/b/c deterministic stubs (Phase 2.1 — swap for real agents in 2.2)
-            ba_analysis_stub_activity,
-            sa_analysis_stub_activity,
-            domain_mining_stub_activity,
-            # S4..S11 stubs (Phase 2.1)
+            # S3a/b/c real LangGraph-backed agents (Phase 2.2 — fall back to
+            # deterministic stubs when ANTHROPIC_API_KEY is unset).
+            ba_analysis_activity,
+            sa_analysis_activity,
+            domain_mining_activity,
+            # S4 heuristic convergence + S5..S11 stubs (Phase 2.1)
             convergence_activity,
             solution_design_activity,
             wbs_activity,

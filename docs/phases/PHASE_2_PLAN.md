@@ -97,32 +97,100 @@ deferred to 2.4.
 - Sub-repo `CLAUDE.md` files do not yet document the artifact panels or the
   stub/real BA split — see §5 in this phase plan for the follow-ups.
 
-## Task 2.2: Parallel Agent Execution (S3a, S3b, S3c) — **BLOCKED on `ANTHROPIC_API_KEY`**
+## Task 2.2: Parallel Agent Execution (S3a, S3b, S3c) — **DONE 2026-04-17 (deterministic-first)**
 - BA Agent, SA Agent, Domain Agent running as concurrent Temporal activities
 - Cross-stream conflict detection
 - Readiness tracking (>= 80% triggers convergence)
 - Shared workspace for stream artifacts
 
-### Entry criteria
-- `src/.env` exists with `ANTHROPIC_API_KEY` (required) and optionally
-  `COHERE_API_KEY` (better rerank; ~10–15% retrieval quality gain).
-- Phase 2.1 merged — workflow wired with stub stream activities.
+### DELIVERED
 
-### Concrete work
-1. `agents/sa_agent.py` + `agents/prompts/sa_agent.py` — mirror the BA
-   4-node graph (`retrieve → Haiku extract → Sonnet synth → Sonnet critique`).
-2. `agents/domain_agent.py` + `agents/prompts/domain_agent.py` — same pattern.
-3. `activities/sa_analysis.py` + `activities/domain_mining.py` — Temporal
-   wrappers following `ba_analysis.py` conventions (heartbeat on long calls).
-4. `workflows/bid_workflow.py::_run_s3_streams` — swap the three
-   `_stub_activity` references for the real activity names.
-5. `worker.py` — register the 3 real activities; remove the 3 stubs (or keep
-   under an `AI_STUB_MODE` env flag if we want a degraded-mode fallback).
-6. `activities/convergence.py` — replace empty `conflicts=[]` with real
-   cross-stream conflict detection. Compute readiness from artifact
-   completeness, not from stub-declared confidence.
-7. Unit tests per agent with mocked `AsyncAnthropic` (don't burn tokens in CI);
-   one integration test gated by `ANTHROPIC_API_KEY` (skip if unset).
+**Scope shipped:** full code path for real LangGraph-backed S3a/b/c activities
++ heuristic S4 convergence + readiness gate. Built in deterministic-first mode
+so shippable WITHOUT `ANTHROPIC_API_KEY`: each real activity wrapper checks
+`get_claude_settings().api_key` at runtime and falls back to the Phase 2.1
+deterministic stub when the key is absent. When the key is set the three real
+LangGraph agents run concurrently via `asyncio.gather` in S3.
+
+**New files:**
+- `src/ai-service/agents/prompts/sa_agent.py` — Haiku tech-signal classifier +
+  Sonnet synthesize + Sonnet review prompts (versioned 1.0.0).
+- `src/ai-service/agents/sa_agent.py` — LangGraph 4-node SA agent
+  (`retrieve → classify → synthesize → critique`); 2-attempt JSON retry; loop
+  on low critique confidence capped at `MAX_ITERATIONS=2`; KB-empty short
+  circuit to preserve the draft in degraded mode.
+- `src/ai-service/agents/prompts/domain_agent.py` — Haiku domain-tag extractor
+  + Sonnet synthesize + Sonnet review prompts.
+- `src/ai-service/agents/domain_agent.py` — LangGraph 4-node Domain agent
+  (`retrieve → tag → synthesize → critique`), same loop/degrade contract.
+- `src/ai-service/activities/sa_analysis.py` — Temporal wrapper for the SA
+  agent; heartbeats before and after the graph; stub-fallback gate.
+- `src/ai-service/activities/domain_mining.py` — same shape for Domain agent.
+- `src/ai-service/tests/test_sa_agent.py` — 3 tests (happy path, loop-on-low-
+  confidence, KB-unavailable degrade) using mocked `AsyncAnthropic` + `kb_search`.
+- `src/ai-service/tests/test_domain_agent.py` — 3 tests mirroring SA.
+- `src/ai-service/tests/test_convergence.py` — 5 pure-function tests covering
+  R1 API-protocol mismatch, R2 compliance-without-security-pattern,
+  R3 NFR field-presence, clean case, readiness-weights+gate.
+- `src/ai-service/tests/test_workflow_integration.py` — 1 LLM-dependent test
+  marked `@pytest.mark.integration` + `skipif(not ANTHROPIC_API_KEY)`. Runs
+  the full workflow with real agents once the key is in place.
+
+**Modified files:**
+- `src/ai-service/agents/models.py` — deleted `BARequirements`; BA agent now
+  consumes the shared `StreamInput` DTO from `workflows/artifacts.py`. One
+  input shape for all 3 streams.
+- `src/ai-service/agents/ba_agent.py` — input type rename (`BARequirements` →
+  `StreamInput`). No behaviour change.
+- `src/ai-service/activities/ba_analysis.py` — input type rename + new
+  stub-fallback gate (identical to the SA / Domain wrappers).
+- `src/ai-service/activities/convergence.py` — replaced empty
+  `conflicts=[]` with 3 heuristic rules (`_detect_api_mismatch`,
+  `_detect_compliance_gap`, `_detect_nfr_field_mismatch`). Readiness formula:
+  `0.40·ba + 0.35·sa + 0.25·domain`, gate at 0.80. `build_convergence_report`
+  extracted as a pure function for easy unit testing; activity wraps it.
+- `src/ai-service/workflows/bid_workflow.py::_run_s3_streams` — swapped the
+  three stub references for the real activity names; bumped S3 timeout to
+  10 minutes with a 2-minute heartbeat.
+- `src/ai-service/worker.py` — registers `ba_analysis_activity`,
+  `sa_analysis_activity`, `domain_mining_activity`. Stubs remain in
+  `activities/stream_stubs.py` (callable by the fallback path) but are no
+  longer registered with the Temporal worker.
+- `src/ai-service/tests/test_workflow.py` — registers the real activities in
+  `_ALL_ACTIVITIES`; tests still run LLM-free because the conftest autouse
+  fixture forces the stub-fallback path (see below).
+- `src/ai-service/tests/conftest.py` — new autouse fixture
+  `_force_llm_fallback_by_default` that scrubs `ANTHROPIC_API_KEY` + clears
+  the `get_claude_settings` cache for every test EXCEPT those carrying
+  `@pytest.mark.integration`. Guarantees zero accidental token burn from
+  local dev envs that export the key.
+- `src/ai-service/pyproject.toml` — pytest `addopts = "-m 'not integration'"`
+  by default; new `integration` marker registered.
+
+**Test results at delivery:** 44/44 pytest pass (33 pre-existing + 11 new:
+3 SA, 3 Domain, 5 Convergence); 1 integration test correctly deselected.
+
+**Known gaps carried to 2.3+:**
+- Integration test (`test_phase_2_2_full_pipeline_with_real_agents`) has not
+  yet run green locally — pending `ANTHROPIC_API_KEY`. When the key is
+  wired, rebuild both `ai-service` and `ai-worker` images then
+  `pytest -m integration -v`.
+- Conflict detection is heuristic — it catches REST/GraphQL/gRPC drift,
+  missing security patterns for PCI/HIPAA/GDPR, and NFR field absence. LLM-
+  based semantic compare is Phase 3 work.
+- Readiness weights are hard-coded — no config surface. Tune if the gate
+  misfires on real bids.
+- Rate-limit protection relies on Anthropic default + Temporal retry policy;
+  no explicit semaphore. Revisit if the integration test sees 429s on 3
+  parallel streams.
+- `test_workflow.py` exercises the real activities but always via the stub
+  fallback, so workflow behaviour with real LLM output is only covered by
+  the integration test.
+
+### Entry criteria (for the OPTIONAL live-LLM cutover)
+- `src/.env` exists with `ANTHROPIC_API_KEY` and optionally `COHERE_API_KEY`.
+- Rebuild **both** `ai-service` and `ai-worker` images; force-recreate the
+  worker container (per `project_docker_image_split.md`).
 
 ## Task 2.3: Document Parsing Pipeline
 - Unstructured.io integration for PDF/DOCX

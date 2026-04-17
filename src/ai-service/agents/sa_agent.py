@@ -1,7 +1,7 @@
-"""BA LangGraph agent: retrieve -> extract -> synthesize -> critique -> (loop|END).
+"""SA LangGraph agent: retrieve -> classify -> synthesize -> critique -> (loop|END).
 
-Haiku handles extraction; Sonnet handles synthesis + self-critique.
-All Claude calls enable ephemeral prompt caching on the system prompt.
+Haiku handles per-atom technical signal classification; Sonnet handles synthesis
+and self-critique. Mirrors the BA agent structure — see `agents/ba_agent.py`.
 """
 
 from __future__ import annotations
@@ -15,13 +15,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from agents.models import (
-    BusinessRequirementsDraft,
-    FunctionalRequirement,
-    RiskItem,
-    SimilarProject,
-)
-from agents.prompts.ba_agent import (
+from agents.prompts.sa_agent import (
     SYSTEM_PROMPT_EXTRACT,
     SYSTEM_PROMPT_REVIEW,
     SYSTEM_PROMPT_SYNTHESIZE,
@@ -29,30 +23,33 @@ from agents.prompts.ba_agent import (
 from tools import claude_client as claude_client_mod
 from tools import kb_search as kb_search_mod
 from tools.claude_client import HAIKU, SONNET
-from workflows.artifacts import StreamInput
+from workflows.artifacts import (
+    ArchitecturePattern,
+    SolutionArchitectureDraft,
+    StreamInput,
+    TechnicalRisk,
+    TechStackChoice,
+)
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 2  # initial synthesize + at most one retry after critique
+MAX_ITERATIONS = 2
 CONFIDENCE_LOOP_THRESHOLD = 0.5
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
-class BAState(TypedDict, total=False):
-    """LangGraph working state for the BA agent."""
-
+class SAState(TypedDict, total=False):
     input_req: StreamInput
     retrieved: list[dict[str, Any]]
-    extracted_atoms: list[dict[str, Any]]
-    draft: BusinessRequirementsDraft | None
+    signals: list[dict[str, Any]]
+    draft: SolutionArchitectureDraft | None
     critique: dict[str, Any] | None
     iteration: int
     error: str | None
 
 
 def _strip_json(text: str) -> str:
-    """Remove optional ```json fences an LLM may emit despite instructions."""
     stripped = text.strip()
     stripped = _JSON_FENCE_RE.sub("", stripped)
     return stripped.strip()
@@ -63,29 +60,28 @@ def _parse_json(text: str) -> Any:
 
 
 def _retrieval_query(req: StreamInput) -> str:
-    head_titles = " | ".join(atom.text[:120] for atom in req.requirements[:3])
-    return f"{req.client_name} {req.industry} {req.region} :: {head_titles}".strip()
+    head = " | ".join(atom.text[:120] for atom in req.requirements[:3])
+    return f"architecture {req.industry} {req.region} :: {head}".strip()
 
 
-async def retrieve_similar(state: BAState) -> BAState:
-    """Node 1 — query KB for similar projects/domain context."""
+async def retrieve_similar(state: SAState) -> SAState:
+    """Node 1 — query KB for similar architecture notes."""
     req = state["input_req"]
     query = _retrieval_query(req)
     hits = await kb_search_mod.kb_search(
         query=query,
         domain=req.industry.lower() or None,
-        client=req.client_name or None,
         final_k=5,
     )
-    logger.info("ba_agent.retrieve bid_id=%s hits=%d", req.bid_id, len(hits))
+    logger.info("sa_agent.retrieve bid_id=%s hits=%d", req.bid_id, len(hits))
     return {"retrieved": hits, "iteration": 0}
 
 
-async def extract_requirements(state: BAState) -> BAState:
-    """Node 2 — Haiku normalises raw atoms into structured extraction output."""
+async def classify_signals(state: SAState) -> SAState:
+    """Node 2 — Haiku tags each requirement with technical concerns."""
     req = state["input_req"]
     if not req.requirements:
-        return {"extracted_atoms": []}
+        return {"signals": []}
 
     user_payload = json.dumps(
         [
@@ -103,25 +99,19 @@ async def extract_requirements(state: BAState) -> BAState:
             max_tokens=1024,
             temperature=0.0,
         )
-        atoms = _parse_json(response.text)
-        if not isinstance(atoms, list):
-            raise ValueError("extractor did not return a JSON list")
+        signals = _parse_json(response.text)
+        if not isinstance(signals, list):
+            raise ValueError("classifier did not return a JSON list")
     except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("ba_agent.extract_fallback err=%s", exc)
-        atoms = [
-            {
-                "id": atom.id,
-                "title": atom.text[:80],
-                "category": atom.category,
-                "priority": "SHOULD",
-                "summary": atom.text,
-            }
+        logger.warning("sa_agent.classify_fallback err=%s", exc)
+        signals = [
+            {"id": atom.id, "signals": ["none"], "notes": atom.text}
             for atom in req.requirements
         ]
-    return {"extracted_atoms": atoms}
+    return {"signals": signals}
 
 
-def _synthesis_user_payload(state: BAState) -> str:
+def _synthesis_user_payload(state: SAState) -> str:
     req = state["input_req"]
     payload = {
         "bid_id": str(req.bid_id),
@@ -130,7 +120,7 @@ def _synthesis_user_payload(state: BAState) -> str:
         "region": req.region,
         "deadline": req.deadline.isoformat(),
         "constraints": req.constraints,
-        "extracted_atoms": state.get("extracted_atoms", []),
+        "requirement_signals": state.get("signals", []),
         "retrieved_context": [
             {
                 "source_path": hit.get("source_path"),
@@ -147,41 +137,29 @@ def _synthesis_user_payload(state: BAState) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _coerce_draft(raw: dict[str, Any], req: StreamInput) -> BusinessRequirementsDraft:
-    """Convert a JSON blob from Sonnet into a validated BusinessRequirementsDraft."""
-    scope = raw.get("scope") or {}
-    if not isinstance(scope, dict):
-        scope = {"in_scope": [], "out_of_scope": []}
-    scope.setdefault("in_scope", [])
-    scope.setdefault("out_of_scope", [])
-
-    functional = [
-        FunctionalRequirement(**item) for item in raw.get("functional_requirements", [])
+def _coerce_draft(raw: dict[str, Any], req: StreamInput) -> SolutionArchitectureDraft:
+    stack = [TechStackChoice(**item) for item in raw.get("tech_stack", [])]
+    patterns = [
+        ArchitecturePattern(**item) for item in raw.get("architecture_patterns", [])
     ]
-    risks = [RiskItem(**item) for item in raw.get("risks", [])]
-    similar = [SimilarProject(**item) for item in raw.get("similar_projects", [])]
+    risks = [TechnicalRisk(**item) for item in raw.get("technical_risks", [])]
 
-    return BusinessRequirementsDraft(
+    nfr_raw = raw.get("nfr_targets") or {}
+    nfr = {str(k): str(v) for k, v in nfr_raw.items()} if isinstance(nfr_raw, dict) else {}
+
+    return SolutionArchitectureDraft(
         bid_id=req.bid_id,
-        executive_summary=raw.get("executive_summary", ""),
-        business_objectives=list(raw.get("business_objectives", [])),
-        scope={
-            "in_scope": list(scope.get("in_scope", [])),
-            "out_of_scope": list(scope.get("out_of_scope", [])),
-        },
-        functional_requirements=functional,
-        assumptions=list(raw.get("assumptions", [])),
-        constraints=list(raw.get("constraints", req.constraints)),
-        success_criteria=list(raw.get("success_criteria", [])),
-        risks=risks,
-        similar_projects=similar,
+        tech_stack=stack,
+        architecture_patterns=patterns,
+        nfr_targets=nfr,
+        technical_risks=risks,
+        integrations=list(raw.get("integrations", [])),
         confidence=float(raw.get("confidence", 0.4)),
         sources=list(raw.get("sources", [])),
     )
 
 
-async def synthesize_draft(state: BAState) -> BAState:
-    """Node 3 — Sonnet drafts the BusinessRequirementsDraft; retry once on parse failure."""
+async def synthesize_draft(state: SAState) -> SAState:
     req = state["input_req"]
     client = _get_client()
     user_payload = _synthesis_user_payload(state)
@@ -206,7 +184,7 @@ async def synthesize_draft(state: BAState) -> BAState:
         except (json.JSONDecodeError, ValueError, ValidationError) as exc:
             last_error = str(exc)
             logger.warning(
-                "ba_agent.synth_parse_err attempt=%d err=%s", attempt + 1, last_error
+                "sa_agent.synth_parse_err attempt=%d err=%s", attempt + 1, last_error
             )
             messages = [
                 {"role": "user", "content": user_payload},
@@ -223,14 +201,12 @@ async def synthesize_draft(state: BAState) -> BAState:
     return {"draft": None, "iteration": iteration, "error": last_error}
 
 
-async def self_critique(state: BAState) -> BAState:
-    """Node 4 — Sonnet critiques the draft and emits confidence + gap list."""
+async def self_critique(state: SAState) -> SAState:
     draft = state.get("draft")
-    req = state["input_req"]
     if draft is None:
         return {
             "critique": {
-                "coverage_gaps": [atom.id for atom in req.requirements],
+                "coverage_gaps": ["draft missing"],
                 "quality_issues": ["draft synthesis failed"],
                 "confidence": 0.0,
             }
@@ -239,7 +215,7 @@ async def self_critique(state: BAState) -> BAState:
     client = _get_client()
     user_payload = json.dumps(
         {
-            "atoms": state.get("extracted_atoms", []),
+            "signals": state.get("signals", []),
             "draft": draft.model_dump(mode="json"),
         },
         ensure_ascii=False,
@@ -256,7 +232,7 @@ async def self_critique(state: BAState) -> BAState:
         if not isinstance(critique, dict):
             raise ValueError("critique did not return a JSON object")
     except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("ba_agent.critique_fallback err=%s", exc)
+        logger.warning("sa_agent.critique_fallback err=%s", exc)
         critique = {
             "coverage_gaps": [],
             "quality_issues": [f"critique parse failure: {exc}"],
@@ -270,7 +246,7 @@ async def self_critique(state: BAState) -> BAState:
     return {"critique": critique}
 
 
-def _route_after_critique(state: BAState) -> str:
+def _route_after_critique(state: SAState) -> str:
     draft = state.get("draft")
     critique = state.get("critique") or {}
     iteration = int(state.get("iteration", 0))
@@ -279,35 +255,31 @@ def _route_after_critique(state: BAState) -> str:
 
     if draft is None:
         return END
-    # Degraded mode: no KB context available → retrying synthesis won't produce
-    # a better draft, so accept the current one instead of looping.
     if not retrieved:
         draft.confidence = max(float(draft.confidence), confidence)
         return END
     if confidence < CONFIDENCE_LOOP_THRESHOLD and iteration < MAX_ITERATIONS:
         logger.info(
-            "ba_agent.loop iteration=%d confidence=%.2f -> re-synthesize",
+            "sa_agent.loop iteration=%d confidence=%.2f -> re-synthesize",
             iteration,
             confidence,
         )
         return "synthesize_draft"
-    # Persist critique confidence onto the draft for downstream consumers.
     draft.confidence = max(float(draft.confidence), confidence)
     return END
 
 
 @lru_cache(maxsize=1)
 def _build_graph() -> Any:
-    """Compile the BA LangGraph graph once at module load."""
-    graph = StateGraph(BAState)
+    graph = StateGraph(SAState)
     graph.add_node("retrieve_similar", retrieve_similar)
-    graph.add_node("extract_requirements", extract_requirements)
+    graph.add_node("classify_signals", classify_signals)
     graph.add_node("synthesize_draft", synthesize_draft)
     graph.add_node("self_critique", self_critique)
 
     graph.add_edge(START, "retrieve_similar")
-    graph.add_edge("retrieve_similar", "extract_requirements")
-    graph.add_edge("extract_requirements", "synthesize_draft")
+    graph.add_edge("retrieve_similar", "classify_signals")
+    graph.add_edge("classify_signals", "synthesize_draft")
     graph.add_edge("synthesize_draft", "self_critique")
     graph.add_conditional_edges(
         "self_critique",
@@ -318,36 +290,31 @@ def _build_graph() -> Any:
 
 
 def _get_client() -> claude_client_mod.ClaudeClient:
-    """Construct a fresh ClaudeClient per call so tests can monkey-patch the module."""
     return claude_client_mod.ClaudeClient()
 
 
-async def run_ba_agent(input_req: StreamInput) -> BusinessRequirementsDraft:
-    """Entrypoint — run the BA graph and return the final draft (empty if LLM failed)."""
+async def run_sa_agent(input_req: StreamInput) -> SolutionArchitectureDraft:
+    """Entrypoint — run the SA graph and return the final draft (empty if LLM failed)."""
     compiled = _build_graph()
-    initial: BAState = {"input_req": input_req, "iteration": 0}
-    final_state: BAState = await compiled.ainvoke(initial)  # type: ignore[assignment]
+    initial: SAState = {"input_req": input_req, "iteration": 0}
+    final_state: SAState = await compiled.ainvoke(initial)  # type: ignore[assignment]
 
     draft = final_state.get("draft")
     if draft is not None:
         return draft
 
     logger.error(
-        "ba_agent.no_draft bid_id=%s err=%s",
+        "sa_agent.no_draft bid_id=%s err=%s",
         input_req.bid_id,
         final_state.get("error"),
     )
-    return BusinessRequirementsDraft(
+    return SolutionArchitectureDraft(
         bid_id=input_req.bid_id,
-        executive_summary="",
-        business_objectives=[],
-        scope={"in_scope": [], "out_of_scope": []},
-        functional_requirements=[],
-        assumptions=[],
-        constraints=list(input_req.constraints),
-        success_criteria=[],
-        risks=[],
-        similar_projects=[],
+        tech_stack=[],
+        architecture_patterns=[],
+        nfr_targets={},
+        technical_risks=[],
+        integrations=[],
         confidence=0.0,
         sources=[],
     )

@@ -1,13 +1,14 @@
-"""Temporal workflow — full 11-state DAG (Phase 2.1: deterministic stubs).
+"""Temporal workflow — full 11-state DAG.
 
 Order: S0 Intake -> S1 Triage (+ human gate) -> S2 Scoping ->
        S3 parallel (S3a BA / S3b SA / S3c Domain) -> S4 Convergence ->
        S5 Solution Design -> S6 WBS -> S7 Commercial -> S8 Assembly ->
        S9 Review -> S10 Submission -> S11 Retrospective -> S11_DONE.
 
-S3a currently calls a deterministic stub (`ba_analysis_stub_activity`) rather
-than the real BA LangGraph agent — Phase 2.2 swaps the three stream stubs for
-real LLM-backed activities once ANTHROPIC_API_KEY is wired.
+Phase 2.2: S3a/b/c call the real LangGraph-backed activities
+(`ba_analysis_activity`, `sa_analysis_activity`, `domain_mining_activity`).
+Each activity falls back to its deterministic stub when ANTHROPIC_API_KEY is
+not set, so the workflow stays runnable without an LLM key.
 """
 
 from __future__ import annotations
@@ -23,18 +24,16 @@ _NIL_UUID = UUID(int=0)
 
 with workflow.unsafe.imports_passed_through():
     from activities.assembly import assembly_activity
+    from activities.ba_analysis import ba_analysis_activity
     from activities.commercial import commercial_activity
     from activities.convergence import convergence_activity
+    from activities.domain_mining import domain_mining_activity
     from activities.intake import intake_activity
     from activities.retrospective import retrospective_activity
     from activities.review import review_activity
+    from activities.sa_analysis import sa_analysis_activity
     from activities.scoping import scoping_activity
     from activities.solution_design import solution_design_activity
-    from activities.stream_stubs import (
-        ba_analysis_stub_activity,
-        domain_mining_stub_activity,
-        sa_analysis_stub_activity,
-    )
     from activities.submission import submission_activity
     from activities.triage import triage_activity
     from activities.wbs import wbs_activity
@@ -72,6 +71,11 @@ with workflow.unsafe.imports_passed_through():
 
 HUMAN_GATE_TIMEOUT = timedelta(hours=24)
 ACTIVITY_TIMEOUT = timedelta(minutes=5)
+# S3 streams may run 3 real LLM-backed LangGraph agents in parallel; give them
+# more headroom than the default and emit heartbeats so Temporal doesn't fail
+# the activity while Sonnet is thinking.
+S3_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+S3_HEARTBEAT_TIMEOUT = timedelta(minutes=2)
 
 _DEFAULT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=1),
@@ -244,21 +248,24 @@ class BidWorkflow:
         )
 
         ba_future = workflow.execute_activity(
-            ba_analysis_stub_activity,
+            ba_analysis_activity,
             stream_input,
-            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            start_to_close_timeout=S3_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=S3_HEARTBEAT_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
         )
         sa_future = workflow.execute_activity(
-            sa_analysis_stub_activity,
+            sa_analysis_activity,
             stream_input,
-            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            start_to_close_timeout=S3_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=S3_HEARTBEAT_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
         )
         dm_future = workflow.execute_activity(
-            domain_mining_stub_activity,
+            domain_mining_activity,
             stream_input,
-            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            start_to_close_timeout=S3_ACTIVITY_TIMEOUT,
+            heartbeat_timeout=S3_HEARTBEAT_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
         )
 

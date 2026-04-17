@@ -1,28 +1,13 @@
-"""Pydantic DTOs for the BA LangGraph agent I/O (Task 1.3)."""
+"""Pydantic DTOs for the S3 LangGraph agents (BA / SA / Domain)."""
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from workflows.base import RequirementAtom
-
 Priority = Literal["MUST", "SHOULD", "COULD", "WONT"]
-
-
-class BARequirements(BaseModel):
-    """Input to the BA agent — merged view of BidCard + ScopingResult."""
-
-    bid_id: UUID
-    client_name: str
-    industry: str
-    region: str
-    requirements: list[RequirementAtom] = Field(default_factory=list)
-    constraints: list[str] = Field(default_factory=list)
-    deadline: datetime
 
 
 class FunctionalRequirement(BaseModel):

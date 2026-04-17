@@ -10,13 +10,14 @@ from uuid import uuid4
 import pytest
 
 from agents import ba_agent
-from agents.models import BARequirements, BusinessRequirementsDraft
+from agents.models import BusinessRequirementsDraft
 from tools.claude_client import HAIKU, SONNET, ClaudeResponse
+from workflows.artifacts import StreamInput
 from workflows.models import RequirementAtom
 
 
-def _sample_input() -> BARequirements:
-    return BARequirements(
+def _sample_input() -> StreamInput:
+    return StreamInput(
         bid_id=uuid4(),
         client_name="Acme Bank",
         industry="banking",

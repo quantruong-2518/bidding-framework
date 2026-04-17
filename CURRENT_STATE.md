@@ -3,19 +3,20 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-17 (Phase 2.1 delivery)
+## Last Updated: 2026-04-17 (Phase 2.2 delivery — deterministic-first)
 
-## Overall Status: PHASE 2.1 COMPLETE — ready for Phase 2.2 (blocked on ANTHROPIC_API_KEY)
+## Overall Status: PHASE 2.2 COMPLETE (code) — live-LLM integration test pending `ANTHROPIC_API_KEY`
 
 ## >>> NEXT ACTION <<<
-**Phase 2.2: Parallel Agent Execution (S3a, S3b, S3c) — real LangGraph agents**
-- Wire `ba_analysis_activity` (already built in Phase 1.3) to replace `ba_analysis_stub_activity`
-- Build `sa_agent.py` + `domain_agent.py` following the BA pattern (retrieve → Haiku extract → Sonnet synth → Sonnet critique)
-- Create `sa_analysis_activity` + `domain_mining_activity` wrappers; swap into `workflows/bid_workflow.py::_run_s3_streams`
-- Extend S4 `convergence_activity` with real cross-stream conflict detection + readiness scoring (≥80% gate)
-- Tests: unit tests with mocked `AsyncAnthropic`; 1 integration test gated by env key
-- **Blocked on:** `ANTHROPIC_API_KEY` in `src/.env`. Optional: `COHERE_API_KEY` for better retrieval rerank.
-- See `docs/phases/PHASE_2_PLAN.md` §2.2 and memory `project_phase_2_roadmap.md` for conversation split.
+**Phase 2.3 + 2.7 (pair): Document parsing (Unstructured.io) + per-bid Obsidian workspace**
+- Both tasks are filesystem IO, no LLM churn — natural pair per `project_phase_2_roadmap.md`.
+- 2.3: Unstructured.io container + RFP → BidCard auto-populate; add `profiles: ["parse"]` to `docker-compose.yml`.
+- 2.7: per-bid folder scaffold under `kb-vault/bids/<bid-id>/`; hook into `ingestion_service.py`.
+
+**Optional intermediate step (live-LLM smoke for 2.2):**
+- Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker` (rebuild both — see `project_docker_image_split.md`).
+- Run the gated integration test: `pytest -m integration -v` (exercises real BA/SA/Domain agents).
+- Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` should no longer start with `"Stub BA summary"`.
 
 ### Live after Phase 2.1 (what a dev can run today)
 - `cd src && docker compose up --build -d` → **10** services healthy (~60–120s cold start)
@@ -24,6 +25,34 @@
 - ai-service direct API at `http://localhost:8001/docs` (Swagger) — `/workflows/bid/*` endpoints walk the full S0→S11_DONE pipeline
 - NestJS api-gateway at `http://localhost:3000` — new `GET /bids/:id/workflow/artifacts/:type` endpoint (JWT-gated, 14 artifact keys)
 - Keycloak admin at `http://localhost:8080` (admin/admin) — realm `bidding` not yet provisioned (Phase 1.x), so authenticated flows need a pasted JWT or realm import
+
+### Phase 2.2 Delivery Summary (2026-04-17, deterministic-first path)
+**Scope:** full code path for real LangGraph-backed S3a/b/c + heuristic S4 convergence. Shipped without `ANTHROPIC_API_KEY` via a per-activity fallback gate — each real activity wrapper checks `get_claude_settings().api_key` and falls back to the Phase 2.1 deterministic stub when absent. 44/44 pytest pass (33 pre-existing + 11 new).
+
+**Files added:**
+- `src/ai-service/agents/prompts/sa_agent.py` + `agents/sa_agent.py` — Haiku classify + Sonnet synth/critique; LangGraph 4-node graph mirrors BA pattern (retrieve → classify → synth → critique → loop-on-low-confidence)
+- `src/ai-service/agents/prompts/domain_agent.py` + `agents/domain_agent.py` — same shape, Haiku tags + Sonnet compliance + practices + glossary
+- `src/ai-service/activities/sa_analysis.py` + `activities/domain_mining.py` — Temporal wrappers with heartbeats + stub-fallback gate
+- `src/ai-service/tests/test_sa_agent.py` (3), `tests/test_domain_agent.py` (3), `tests/test_convergence.py` (5), `tests/test_workflow_integration.py` (1, gated)
+
+**Files modified:**
+- `src/ai-service/agents/models.py` — deleted `BARequirements`; BA agent now consumes shared `StreamInput` DTO (Q1 unification)
+- `src/ai-service/agents/ba_agent.py` — input type rename only
+- `src/ai-service/activities/ba_analysis.py` — input rename + same stub-fallback gate as SA/Domain
+- `src/ai-service/activities/convergence.py` — 3 heuristic conflict rules (API-layer mismatch, compliance-gap, NFR-field-presence); readiness = 0.40·ba + 0.35·sa + 0.25·domain with gate at 0.80; `build_convergence_report` pure function extracted for unit tests
+- `src/ai-service/workflows/bid_workflow.py::_run_s3_streams` — real activity refs; S3 timeout bumped 5min→10min + 2min heartbeat
+- `src/ai-service/worker.py` — real activities registered; stubs kept in codebase (callable via fallback) but out of registry
+- `src/ai-service/tests/test_workflow.py` — registers real activities in `_ALL_ACTIVITIES`; tests stay LLM-free because conftest autouse scrubs the key
+- `src/ai-service/tests/conftest.py` — new autouse fixture `_force_llm_fallback_by_default` scrubs `ANTHROPIC_API_KEY` + clears `get_claude_settings` cache for every non-integration test
+- `src/ai-service/pyproject.toml` — `addopts = "-m 'not integration'"` + `integration` marker registered
+- `docs/phases/PHASE_2_PLAN.md` — Task 2.2 DELIVERED block
+- `src/ai-service/CLAUDE.md` — stub-vs-real wording updated
+
+**Test results:**
+- ai-service: **44/44 pytest pass** (33 pre-existing + 3 SA + 3 Domain + 5 Convergence); 1 integration test correctly deselected via `-m 'not integration'`
+- api-gateway: untouched, still 11/11 Jest
+- frontend: untouched, still 24/24 vitest
+- Live HTTP smoke: **not yet re-run** — Phase 2.1 behaviour unchanged because every test env + the existing running worker both take the stub-fallback path. Rebuild `ai-service` + `ai-worker` images + set `ANTHROPIC_API_KEY` before smoke-testing real agents.
 
 ### Phase 2.1 Delivery Summary (2026-04-17)
 **Scope:** Deterministic 11-state DAG end-to-end with all S3..S11 artifacts stubbed. No LLM calls — unblocks shippable milestone without `ANTHROPIC_API_KEY`.
@@ -134,7 +163,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | # | Task | Status | Notes |
 |---|---|---|---|
 | 2.1 | Complete 11-state DAG in Temporal | DONE | 11 deterministic stubs wired via asyncio.gather for S3; workflow reaches S11_DONE end-to-end |
-| 2.2 | Parallel agent execution (S3a, S3b, S3c) | NOT STARTED | Blocked on `ANTHROPIC_API_KEY`. Build SA + Domain agents; swap 3 stream stubs for real LangGraph wrappers; add real conflict detection in S4 |
+| 2.2 | Parallel agent execution (S3a, S3b, S3c) | DONE (deterministic-first) | Real BA/SA/Domain LangGraph agents + heuristic S4 convergence shipped. Each activity falls back to its stub until `ANTHROPIC_API_KEY` is set. 44/44 pytest pass; 1 integration test deselected |
 | 2.3 | Document parsing pipeline (Unstructured.io) | NOT STARTED | |
 | 2.4 | Human approval flow (Temporal signals) | NOT STARTED | S1 triage signal already exists as pattern; extend to S9 review gate |
 | 2.5 | Real-time updates (SSE + WebSocket) | NOT STARTED | Redis + socket.io scaffold in place; needs agent-stream integration |
