@@ -16,11 +16,59 @@
 - See `docs/phases/PHASE_2_PLAN.md` for full scope
 
 ### Live in Phase 1 (what a dev can run today)
-- `cd src && docker compose up --build -d` → 9 services healthy (~60–90s cold start)
+- `cd src && docker compose up --build -d` → **10** services healthy (~60–120s cold start; includes new `ai-worker`)
 - Frontend at `http://localhost:3001` → Demo-mode login renders dashboard + ReactFlow DAG
 - Temporal UI at `http://localhost:8088`
 - ai-service direct API at `http://localhost:8001/docs` (Swagger)
 - Keycloak admin at `http://localhost:8080` (admin/admin) — realm `bidding` not yet provisioned (Phase 1.x), so authenticated flows need a pasted JWT or realm import
+
+### Phase 1 Hardening Pass (2026-04-17 PM)
+Cold-start on a fresh host revealed 7 defects in the original Phase 1 delivery — all fixed and verified:
+
+| # | File | Defect | Fix |
+|---|---|---|---|
+| 1 | `ai-service/pyproject.toml` | `python = "^3.12"` resolves `>=3.12,<4.0`, conflicts with `fastembed` (<3.13) → build fail | Narrowed to `python = ">=3.12,<3.13"` |
+| 2 | `src/docker-compose.yml` temporal healthcheck | Used `sh /dev/tcp/...` — auto-setup image's `sh` lacks `/dev/tcp`, probe always fails | Switched to `tctl --address $(hostname):7233 cluster health \| grep -q SERVING` (127.0.0.1 wrong — Temporal binds to container IP) |
+| 3 | `src/docker-compose.yml` keycloak healthcheck | Probed mgmt port 9000, but KC 24 doesn't expose separate mgmt port (25+ only) | Probe `/health/ready` on port 8080 |
+| 4 | `src/frontend/Dockerfile` | Missing `ARG NEXT_PUBLIC_*` → Next.js inlines fallback `http://localhost:3001` → dashboard calls frontend instead of gateway → client-side crash | Added build ARGs + ENV; compose passes `args:` block |
+| 5 | `src/docker-compose.yml` | No `ai-worker` service → Temporal task queue has no consumer → workflows accepted but never processed | Added `ai-worker` service running `python worker.py` reusing ai-service image |
+| 6 | `ai-service/config/temporal.py` + `worker.py` | Default JSON converter loses pydantic type on `handle.query` round-trip (Pydantic v2 warning had been firing) | Wired `temporalio.contrib.pydantic.pydantic_data_converter` on both worker + client |
+| 7 | `ai-service/agents/ba_agent.py` | Graph always loops when confidence < 0.5, even with empty KB — crashes BA tests and wastes LLM calls on RAG outage | `_route_after_critique` short-circuits to END when `retrieved` is empty (degraded mode) |
+
+Also added: `./kb-vault` bind-mounted into ai-service + ai-worker at `/kb-vault` with `KB_VAULT_PATH=/kb-vault`, so `python -m ingestion` works out of the box.
+
+### Phase 1 Verification Runbook (run these to confirm a clean state)
+```bash
+# 1. Cold start
+cd src && docker compose up -d --build           # expect 10 services healthy
+docker compose ps -a                              # all "Up … (healthy)"
+
+# 2. Seed data
+docker exec bid-ai-service python -m rag.seed                    # 61 chunks / 9 files
+docker exec bid-ai-service python -m ingestion                   # 21 notes / 111 edges
+
+# 3. Workflow E2E (no LLM required — stub deterministic S0→S1→S2)
+curl -s -X POST http://localhost:8001/workflows/bid/start-from-card \
+  -H 'Content-Type: application/json' \
+  -d '{"client_name":"Verify","industry":"Banking","region":"SEA","deadline":"2026-12-31T00:00:00Z","scope_summary":"verify","technology_keywords":["go"],"estimated_profile":"M","requirements_raw":["x"]}'
+# → {"workflow_id":"bid-<uuid>",...}
+# Send approve signal:
+curl -s -X POST http://localhost:8001/workflows/bid/<id>/triage-signal \
+  -H 'Content-Type: application/json' -d '{"approved":true,"reviewer":"verify"}'
+# Query:
+curl -s http://localhost:8001/workflows/bid/<id> | jq .current_state  # → "S2_DONE"
+
+# 4. Tests — all green after the hardening pass
+# ai-service (32 tests) — tests/ is dockerignored; run via temp container with bind-mount
+docker run --rm --network bid-framework_default \
+  -v "$PWD/ai-service/tests:/app/tests:ro" \
+  -e QDRANT_URL=http://qdrant:6333 -e TEMPORAL_HOST=temporal:7233 -e REDIS_URL=redis://redis:6379 \
+  bid-framework-ai-service sh -c "pip install -q pytest pytest-asyncio && pytest -v"
+# api-gateway (8 tests) — use test:e2e not default test (rootDir miss)
+cd api-gateway && npm run test:e2e
+# frontend (24 tests + typecheck + build)
+cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
+```
 
 ### Documentation refreshed (2026-04-17)
 - `CURRENT_STATE.md` (this file) — Phase 1 complete, Next Action = Phase 2.1
@@ -101,5 +149,7 @@
 - Keycloak realm `bidding` not yet provisioned — `docker-compose.yml` runs `start-dev` without `--import-realm`; add `bidding-realm.json` and `--import-realm` flag before wiring real auth end-to-end
 - `ba_analysis_activity` implemented but not registered in `worker.py` (by design — Phase 2.2 wires S3a/b/c in parallel)
 - Api-gateway Jest default `rootDir=src` only discovers `src/**/*.spec.ts`; run `npm run test:e2e` (or move specs under `src/`) to include `test/*.spec.ts`
-- Postgres persistence for bids uses an in-memory Map in `bids.service.ts` — swap for TypeORM/Prisma in Phase 2
+- Postgres persistence for bids uses an in-memory Map in `bids.service.ts` — swap for TypeORM/Prisma in Phase 2. `bidding_db` is empty (0 tables) — no migration yet.
 - CORS defaults to `*` when `CORS_ORIGIN` unset — tighten before any shared-environment deploy
+- ai-service `Dockerfile` `.dockerignore` excludes `tests/` — pytest must run via bind-mount (`docker run --rm -v "$PWD/tests:/app/tests:ro" ...`) rather than `docker exec`. Consider a separate `Dockerfile.test` target in Phase 2.
+- ANTHROPIC_API_KEY not wired from `.env` by default — `src/.env` not created by compose. Copy `.env.example` → `.env` and set the key before running any LLM-dependent flow (BA/SA agents, Cohere rerank). S0–S2 are stub deterministic and need no key.

@@ -303,6 +303,9 @@ Week 4: 1.7 (continue) + integration testing + polish
 
 ## Phase 1 Delivered Summary (2026-04-17)
 
+> **Update (2026-04-17 PM):** A cold-start verification pass uncovered 7 defects (Docker healthchecks + missing `ai-worker` service + frontend build-arg inlining + fastembed/Python range + Temporal pydantic converter + BA agent degraded-mode loop). All fixed; see `CURRENT_STATE.md` → "Phase 1 Hardening Pass" for the full list + re-usable verification runbook. Phase 1 is now **verified end-to-end** on a fresh `docker compose up --build`, with all 32 ai-service + 8 api-gateway + 24 frontend tests green.
+
+
 ### Actual execution waves
 - **Wave 1** (sequential) → Task 1.1 foundation + audit
 - **Wave 2** (parallel) → Tasks 1.2 / 1.4 / 1.6 + integration audit (found 1 blocker: payload-schema mismatch between NestJS trigger and Python `/start` — fixed by adding `/start-from-card` endpoint that accepts a pre-built `BidCard`, so NestJS-entered structured bids skip S0)

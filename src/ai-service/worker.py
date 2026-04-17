@@ -8,6 +8,7 @@ import signal
 from typing import Any
 
 from temporalio.client import Client
+from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
 from activities.intake import intake_activity
@@ -34,7 +35,11 @@ async def _run() -> None:
         settings.namespace,
         settings.task_queue,
     )
-    client = await Client.connect(settings.host, namespace=settings.namespace)
+    client = await Client.connect(
+        settings.host,
+        namespace=settings.namespace,
+        data_converter=pydantic_data_converter,
+    )
 
     worker = Worker(
         client,

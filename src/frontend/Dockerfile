@@ -8,7 +8,15 @@ COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
+
+# NEXT_PUBLIC_* must be present at build time — Next.js inlines them into client bundles.
+ARG NEXT_PUBLIC_API_URL=http://localhost:3000
+ARG NEXT_PUBLIC_WS_URL=ws://localhost:3000
+ARG NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8080
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \
+    NEXT_PUBLIC_KEYCLOAK_URL=$NEXT_PUBLIC_KEYCLOAK_URL
 RUN npm run build
 
 # --- Runtime (standalone output) ---

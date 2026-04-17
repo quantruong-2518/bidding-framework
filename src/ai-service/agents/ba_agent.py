@@ -275,8 +275,14 @@ def _route_after_critique(state: BAState) -> str:
     critique = state.get("critique") or {}
     iteration = int(state.get("iteration", 0))
     confidence = float(critique.get("confidence", 0.0))
+    retrieved = state.get("retrieved") or []
 
     if draft is None:
+        return END
+    # Degraded mode: no KB context available → retrying synthesis won't produce
+    # a better draft, so accept the current one instead of looping.
+    if not retrieved:
+        draft.confidence = max(float(draft.confidence), confidence)
         return END
     if confidence < CONFIDENCE_LOOP_THRESHOLD and iteration < MAX_ITERATIONS:
         logger.info(

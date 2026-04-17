@@ -32,7 +32,12 @@ def get_settings() -> TemporalSettings:
 async def get_temporal_client():  # type: ignore[no-untyped-def]
     """Return a connected Temporal client; imported lazily to keep cold starts light."""
     from temporalio.client import Client  # local import: optional at module load
+    from temporalio.contrib.pydantic import pydantic_data_converter
 
     settings = get_settings()
     logger.info("temporal.connect host=%s namespace=%s", settings.host, settings.namespace)
-    return await Client.connect(settings.host, namespace=settings.namespace)
+    return await Client.connect(
+        settings.host,
+        namespace=settings.namespace,
+        data_converter=pydantic_data_converter,
+    )

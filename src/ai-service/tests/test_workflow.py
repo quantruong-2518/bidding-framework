@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from temporalio.client import WorkflowFailureError
+from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -14,7 +15,7 @@ from activities.intake import intake_activity
 from activities.scoping import scoping_activity
 from activities.triage import triage_activity
 from workflows.bid_workflow import BidWorkflow
-from workflows.models import BidWorkflowInput, HumanTriageSignal, IntakeInput
+from workflows.models import BidState, BidWorkflowInput, HumanTriageSignal, IntakeInput
 
 TASK_QUEUE = "test-bid-queue"
 
@@ -38,7 +39,9 @@ def _intake() -> IntakeInput:
 
 
 async def _run_with_signal(signal: HumanTriageSignal):
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter,
+    ) as env:
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -80,7 +83,9 @@ async def test_workflow_reject_terminates_at_s1_no_bid() -> None:
 
 @pytest.mark.asyncio
 async def test_workflow_query_state_while_running() -> None:
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter,
+    ) as env:
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -98,13 +103,15 @@ async def test_workflow_query_state_while_running() -> None:
                 "human_triage_decision", HumanTriageSignal(approved=True, reviewer="alice")
             )
             final = await handle.result()
-            snapshot = await handle.query("get_state")
+            snapshot = await handle.query("get_state", result_type=BidState)
             assert snapshot.current_state == final.current_state
 
 
 @pytest.mark.asyncio
 async def test_workflow_gate_timeout_results_in_no_bid() -> None:
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter,
+    ) as env:
         async with Worker(
             env.client,
             task_queue=TASK_QUEUE,
