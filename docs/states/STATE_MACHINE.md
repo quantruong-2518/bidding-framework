@@ -1,13 +1,15 @@
 # State Machine — AI Bidding Framework
 
-> **Implementation status (2026-04-17, Phase 2.2 delivered — deterministic-first):**
+> **Implementation status (2026-04-18, Phase 2.6 + 2.4 delivered):**
 > - **S0/S1/S2** are live with real heuristic logic in `activities/{intake,triage,scoping}.py`.
 > - **S3a/b/c** are live with real LangGraph agents (`agents/{ba,sa,domain}_agent.py` + `activities/{ba_analysis,sa_analysis,domain_mining}.py`). Each activity wrapper checks `get_claude_settings().api_key` at runtime — absent ⇒ fall back to the Phase 2.1 deterministic stub in `activities/stream_stubs.py`; present ⇒ run the real LangGraph graph.
 > - **S4 Convergence** applies three heuristic cross-stream rules (API-protocol mismatch / compliance-without-security-pattern / NFR-field-presence) and a weighted readiness score (`0.40·ba + 0.35·sa + 0.25·domain`, gate 0.80). `activities/convergence.py::build_convergence_report` is a pure function for easy unit testing.
-> - **S5..S11** remain deterministic stubs (Phase 2.1 shape preserved).
-> - Workflow terminal is `S11_DONE`; `S1_NO_BID` still fires on reject or 24h gate timeout.
-> - All state literals (`S0..S11_DONE` incl. `S1_NO_BID` / `S2_DONE`) live in `workflows/base.py::WorkflowState`; frontend mirror is `src/frontend/lib/utils/state-palette.ts`.
-> - The **feedback loops** (S9 reject → S8/S6/S5/S2, S6 over-budget → S5/S4, etc.) are documented below but **not yet wired** in the workflow — Phase 2.4 owns that.
+> - **S5..S8, S10, S11** remain deterministic stubs (Phase 2.1 shape preserved).
+> - **Profile routing (Phase 2.6)** — `bid_workflow.py::_PROFILE_PIPELINE` drives a declarative per-profile pipeline. Bid-S skips S3c (via scoping re-route), S5 Solution Design, and S7 Commercial. Assembly (S8) null-guards `hld=None` + `pricing=None`. Bid-M / L / XL run the full 12-state pipeline; XL parity (S3d/S3e) deferred to Phase 3.
+> - **S9 Review Gate (Phase 2.4)** — real `human_review_decision` signal handler with sequential multi-reviewer (S/M=1, L=3, XL=5), per-profile timeout (72h / 72h / 72h / 120h), 3-round cap terminating at `S9_BLOCKED`, earliest-target loop-back via `_route_on_changes_requested` + declarative `_ARTIFACT_CLEANUP` reset. `approval_needed` broadcast via best-effort `notify_approval_needed_activity`.
+> - Workflow terminals: `S11_DONE` (happy path), `S1_NO_BID`, `S9_BLOCKED`.
+> - All state literals (`S0..S11_DONE` incl. `S1_NO_BID` / `S2_DONE` / `S9_BLOCKED`) live in `workflows/base.py::WorkflowState`; frontend mirror is `src/frontend/lib/utils/state-palette.ts`.
+> - Feedback loops S9→{S2, S5, S6, S8} are **wired live** in Phase 2.4. S6 over-budget + S7 unfeasible remain Phase 3.
 > - Live-LLM integration test (`tests/test_workflow_integration.py`) is gated by `@pytest.mark.integration` + `ANTHROPIC_API_KEY`; pytest default `addopts = "-m 'not integration'"` skips it.
 > - See `docs/phases/PHASE_2_PLAN.md` for scope + delivery notes.
 
@@ -78,22 +80,22 @@ Bid XL (> 2000 MD):    Full + S3d,S3e + multi-gate + C-level approval
 
 ```
 ┌──────┬─────────────────────┬──────────┬───────────┬──────────┬──────────────────────┐
-│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Status (2.2)         │
+│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Status (2.6)         │
 ├──────┼─────────────────────┼──────────┼───────────┼──────────┼──────────────────────┤
 │ S0   │ Intake              │ No       │ simple    │ full     │ REAL heuristic       │
 │ S1   │ Triage              │ No       │ quick     │ deep     │ REAL heuristic       │
 │ S2   │ Scoping             │ No       │ light     │ full     │ REAL heuristic       │
 │ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ REAL LLM / stub fb*  │
 │ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ REAL LLM / stub fb*  │
-│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ REAL LLM / stub fb*  │
-│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ — (Phase 3)          │
-│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ — (Phase 3)          │
+│ S3c  │ Domain Mining       │ YES      │ SKIP (live)│ YES     │ REAL LLM / stub fb*  │
+│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ SKIP**   │ — (Phase 3)          │
+│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ SKIP**   │ — (Phase 3)          │
 │ S4   │ Convergence         │ No       │ simple    │ full     │ REAL heuristic       │
-│ S5   │ Solution Design     │ No       │ light     │ full     │ STUB                 │
+│ S5   │ Solution Design     │ No       │ SKIP (live)│ full    │ STUB                 │
 │ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ STUB                 │
-│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ STUB                 │
-│ S8   │ Assembly            │ No       │ template  │ custom   │ STUB                 │
-│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ STUB (auto-ok)       │
+│ S7   │ Commercial Strategy │ No       │ SKIP (live)│ YES     │ STUB                 │
+│ S8   │ Assembly            │ No       │ template  │ custom   │ STUB (hld/price None-safe) │
+│ S9   │ Review Gate         │ No       │ 1 reviewer│ 5 seq    │ REAL (signal + loop-back) │
 │ S10  │ Submission          │ No       │ YES       │ YES      │ STUB                 │
 │ S11  │ Retrospective       │ No       │ basic     │ deep     │ STUB                 │
 └──────┴─────────────────────┴──────────┴───────────┴──────────┴──────────────────────┘
@@ -102,7 +104,8 @@ Legend:
   REAL        = deterministic heuristic, no LLM
   REAL LLM    = Phase 2.2 LangGraph agent (Haiku classify/extract + Sonnet synth/critique)
   STUB        = Phase 2.1 deterministic placeholder (swapped to real LLM in Phase 3 or later)
-  SKIP        = not applicable for this bid profile (Phase 2.6 wires the conditional routing)
+  SKIP (live) = Phase 2.6 conditionally skips this state for the profile
+  SKIP**      = XL currently falls back to L pipeline (XL_PARITY_PENDING logged); S3d/S3e are Phase 3.
 
 * S3a/b/c: each activity wrapper gates on `get_claude_settings().api_key`.
   When the key is absent the wrapper delegates to `activities/stream_stubs.py::*_stub_activity`

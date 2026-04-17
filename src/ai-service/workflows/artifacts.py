@@ -284,7 +284,7 @@ class SolutionDesignInput(BaseModel):
 
 class WBSInput(BaseModel):
     bid_id: UUID
-    hld: HLDDraft
+    hld: HLDDraft | None = None
     ba_draft: BusinessRequirementsDraft
 
 
@@ -300,9 +300,9 @@ class AssemblyInput(BaseModel):
     ba_draft: BusinessRequirementsDraft
     sa_draft: SolutionArchitectureDraft
     domain_notes: DomainNotes
-    hld: HLDDraft
+    hld: HLDDraft | None = None
     wbs: WBSDraft
-    pricing: PricingDraft
+    pricing: PricingDraft | None = None
 
 
 class ReviewInput(BaseModel):

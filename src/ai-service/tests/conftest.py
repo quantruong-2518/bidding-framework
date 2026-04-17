@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,34 @@ def _force_llm_fallback_by_default(request, monkeypatch):
         yield
     finally:
         get_claude_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _compress_gate_timeouts(request, monkeypatch):
+    """Shrink workflow timeouts to seconds so time-skipping envs settle fast.
+
+    Integration tests opt out via `@pytest.mark.integration`. Non-integration
+    tests benefit from tiny timeouts since Temporal's test env uses virtual
+    time — a 72h gate fires instantly under `env.start_time_skipping`.
+    """
+    if "integration" in request.keywords:
+        yield
+        return
+
+    from workflows import bid_workflow as bwf
+
+    fast = timedelta(seconds=5)
+    monkeypatch.setattr(bwf, "HUMAN_GATE_TIMEOUT", fast, raising=False)
+    monkeypatch.setattr(bwf, "ACTIVITY_TIMEOUT", fast, raising=False)
+    monkeypatch.setattr(bwf, "S3_ACTIVITY_TIMEOUT", fast, raising=False)
+    if hasattr(bwf, "_S9_TIMEOUT"):
+        monkeypatch.setattr(
+            bwf,
+            "_S9_TIMEOUT",
+            {p: fast for p in ("S", "M", "L", "XL")},
+            raising=False,
+        )
+    yield
 
 
 @pytest.fixture(autouse=True)

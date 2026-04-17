@@ -29,6 +29,7 @@ WorkflowState = Literal[
     "S7",
     "S8",
     "S9",
+    "S9_BLOCKED",
     "S10",
     "S11",
     "S11_DONE",

@@ -12,12 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 def _executive_section(input_: AssemblyInput) -> ProposalSection:
+    price_line = (
+        f"- Proposed price: {input_.pricing.total:.2f} {input_.pricing.currency}.\n"
+        if input_.pricing is not None
+        else "- Proposed price: TBD (Bid-S fast-path — commercial deferred to contract phase).\n"
+    )
     body = (
         f"# Executive Summary\n\n"
         f"{input_.ba_draft.executive_summary}\n\n"
         f"- Total effort: {input_.wbs.total_effort_md:.1f} MD "
         f"over ~{input_.wbs.timeline_weeks} weeks.\n"
-        f"- Proposed price: {input_.pricing.total:.2f} {input_.pricing.currency}.\n"
+        f"{price_line}"
         f"- Architecture backbone: "
         f"{', '.join(ts.choice for ts in input_.sa_draft.tech_stack)}.\n"
     )
@@ -29,6 +34,21 @@ def _executive_section(input_: AssemblyInput) -> ProposalSection:
 
 
 def _solution_section(input_: AssemblyInput) -> ProposalSection:
+    if input_.hld is None:
+        overview = (
+            "High-level design omitted for Bid-S fast-path. Solution shape "
+            "derived directly from SA stream outputs."
+        )
+        tech_lines = "\n".join(
+            f"- **{ts.layer}** — {ts.choice}: {ts.rationale}"
+            for ts in input_.sa_draft.tech_stack
+        )
+        body = f"# Proposed Solution\n\n{overview}\n\n{tech_lines}\n"
+        return ProposalSection(
+            heading="Proposed Solution",
+            body_markdown=body,
+            sourced_from=["sa_draft"],
+        )
     bullets = "\n".join(
         f"- **{component.name}** — {component.responsibility}"
         for component in input_.hld.components
@@ -66,6 +86,17 @@ def _compliance_section(input_: AssemblyInput) -> ProposalSection:
 
 
 def _commercial_section(input_: AssemblyInput) -> ProposalSection:
+    if input_.pricing is None:
+        body = (
+            "# Commercial Proposal\n\n"
+            "Commercial terms deferred (Bid-S fast-path). Pricing will be "
+            "negotiated at contract signature based on the WBS effort total.\n"
+        )
+        return ProposalSection(
+            heading="Commercial",
+            body_markdown=body,
+            sourced_from=[],
+        )
     lines = "\n".join(f"- {pl.label}: {pl.amount:.2f} {pl.unit}" for pl in input_.pricing.lines)
     body = (
         f"# Commercial Proposal\n\n"
@@ -98,7 +129,7 @@ async def assembly_activity(payload: AssemblyInput) -> ProposalPackage:
         "has_executive_summary": True,
         "has_solution_section": True,
         "has_delivery_plan": bool(payload.wbs.items),
-        "has_commercial_section": bool(payload.pricing.lines),
+        "has_commercial_section": payload.pricing is None or bool(payload.pricing.lines),
         "compliance_covered": bool(payload.domain_notes.compliance),
     }
 

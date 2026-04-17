@@ -24,9 +24,18 @@ const ALL_STATES: WorkflowState[] = [
   'S7',
   'S8',
   'S9',
+  'S9_BLOCKED',
   'S10',
   'S11',
 ];
+
+describe('state-palette S9_BLOCKED terminal', () => {
+  it('marks S9_BLOCKED as a danger-tone terminal', () => {
+    const meta = STATE_PALETTE['S9_BLOCKED'];
+    expect(meta.tone).toBe('danger');
+    expect(meta.label).toMatch(/block/i);
+  });
+});
 
 describe('state-palette', () => {
   it.each(ALL_STATES)('has metadata for %s', (state) => {

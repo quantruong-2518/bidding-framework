@@ -20,7 +20,35 @@ from uuid import UUID
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from workflows.base import BidProfile
+
 _NIL_UUID = UUID(int=0)
+
+# Phase 2.6 declarative pipeline matrix.
+# Bid-S skips S5 (Solution Design) + S7 (Commercial) — minimal fast-path.
+# Bid-M / L / XL run the full 12-state pipeline. XL parity (S3d/S3e) deferred.
+_PROFILE_PIPELINE: dict[BidProfile, tuple[str, ...]] = {
+    "S": ("S0", "S1", "S2", "S3", "S4", "S6", "S8", "S9", "S10", "S11"),
+    "M": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+    "L": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+    "XL": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+}
+
+# State literal → BidWorkflow method attribute name. Populated at class body
+# time by walking this tuple; keeping it module-level keeps `workflow.unsafe`
+# imports out of the critical path.
+_STATE_DISPATCH_MAP: dict[str, str] = {
+    "S2": "_run_s2_scoping",
+    "S3": "_run_s3_streams",
+    "S4": "_run_s4_convergence",
+    "S5": "_run_s5_solution_design",
+    "S6": "_run_s6_wbs",
+    "S7": "_run_s7_commercial",
+    "S8": "_run_s8_assembly",
+    "S9": "_run_s9_review",
+    "S10": "_run_s10_submission",
+    "S11": "_run_s11_retrospective",
+}
 
 with workflow.unsafe.imports_passed_through():
     from activities.assembly import assembly_activity
@@ -164,26 +192,29 @@ class BidWorkflow:
             await self._snapshot_workspace("S1_NO_BID")
             return self._snapshot()
 
-        await self._run_s2_scoping()
-        await self._snapshot_workspace("S2_DONE")
-        await self._run_s3_streams()
-        await self._snapshot_workspace("S3_DONE")
-        await self._run_s4_convergence()
-        await self._snapshot_workspace("S4_DONE")
-        await self._run_s5_solution_design()
-        await self._snapshot_workspace("S5_DONE")
-        await self._run_s6_wbs()
-        await self._snapshot_workspace("S6_DONE")
-        await self._run_s7_commercial()
-        await self._snapshot_workspace("S7_DONE")
-        await self._run_s8_assembly()
-        await self._snapshot_workspace("S8_DONE")
-        await self._run_s9_review()
-        await self._snapshot_workspace("S9_DONE")
-        await self._run_s10_submission()
-        await self._snapshot_workspace("S10_DONE")
-        await self._run_s11_retrospective()
+        profile: BidProfile = self._profile or "M"  # type: ignore[assignment]
+        if profile == "XL":
+            workflow.logger.info("XL_PARITY_PENDING phase=2.6")
+        pipeline = _PROFILE_PIPELINE[profile]
+        idx = pipeline.index("S2")
+        while idx < len(pipeline):
+            if self._state == "S9_BLOCKED":
+                return self._snapshot()
+            state = pipeline[idx]
+            handler = getattr(self, _STATE_DISPATCH_MAP[state])
+            await handler()
+            await self._snapshot_workspace(f"{state}_DONE")
 
+            # Phase 2.4 loop-back: _run_s9_review may set self._state to an
+            # earlier pipeline state. Detect + rewind. Phase 2.6 never triggers
+            # this branch (review stub never loops back).
+            if state == "S9" and self._state != "S9" and self._state in pipeline[:idx]:
+                idx = pipeline.index(self._state)
+                continue
+            idx += 1
+
+        if self._state == "S9_BLOCKED":
+            return self._snapshot()
         self._state = "S11_DONE"
         await self._snapshot_workspace("S11_DONE")
         return self._snapshot()
@@ -330,7 +361,8 @@ class BidWorkflow:
         )
 
     async def _run_s6_wbs(self) -> None:
-        assert self._hld and self._ba_draft and self._bid_card
+        # hld may be None on Bid-S (S5 skipped) — wbs_activity tolerates it.
+        assert self._ba_draft and self._bid_card
         self._state = "S6"
         self._wbs = await workflow.execute_activity(
             wbs_activity,
@@ -358,13 +390,13 @@ class BidWorkflow:
         )
 
     async def _run_s8_assembly(self) -> None:
+        # Bid-S skips S5 (HLD) + S7 (Pricing); the assembly stub null-guards
+        # both (see activities/assembly.py).
         assert (
             self._ba_draft
             and self._sa_draft
             and self._domain_notes
-            and self._hld
             and self._wbs
-            and self._pricing
             and self._bid_card
         )
         self._state = "S8"

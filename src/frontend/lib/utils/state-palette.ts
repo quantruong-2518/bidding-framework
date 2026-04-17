@@ -17,6 +17,7 @@ export type WorkflowState =
   | 'S7'
   | 'S8'
   | 'S9'
+  | 'S9_BLOCKED'
   | 'S10'
   | 'S11'
   | 'S11_DONE';
@@ -124,6 +125,12 @@ export const STATE_PALETTE: Record<WorkflowState, StateMeta> = {
     label: 'Review Gate',
     description: 'Reviewer approval — can loop back on rejection.',
     tone: 'warning',
+  },
+  S9_BLOCKED: {
+    state: 'S9_BLOCKED',
+    label: 'Review Blocked',
+    description: 'Review gate exceeded max rounds or was rejected outright.',
+    tone: 'danger',
   },
   S10: {
     state: 'S10',

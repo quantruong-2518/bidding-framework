@@ -105,6 +105,15 @@ function computeStatuses(
     return statuses;
   }
 
+  if (current === 'S9_BLOCKED') {
+    order.forEach((k) => {
+      const mapped = nodeKindToState(k);
+      const idx = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8'].indexOf(mapped);
+      statuses[k] = idx >= 0 ? 'done' : k === 'S9' ? 'active' : 'skipped';
+    });
+    return statuses;
+  }
+
   const mainOrderForCompare: WorkflowState[] = [
     'S0',
     'S1',
@@ -117,6 +126,7 @@ function computeStatuses(
     'S7',
     'S8',
     'S9',
+    'S9_BLOCKED',
     'S10',
     'S11',
     'S11_DONE',
