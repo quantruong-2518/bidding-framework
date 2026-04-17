@@ -18,6 +18,7 @@ from activities.commercial import commercial_activity
 from activities.convergence import convergence_activity
 from activities.domain_mining import domain_mining_activity
 from activities.intake import intake_activity
+from activities.notify import notify_approval_needed_activity
 from activities.retrospective import retrospective_activity
 from activities.review import review_activity
 from activities.sa_analysis import sa_analysis_activity
@@ -78,6 +79,8 @@ async def _run() -> None:
             retrospective_activity,
             # Per-bid vault writer — called after every phase completes.
             workspace_snapshot_activity,
+            # Phase 2.4 — approval_needed notification for the S9 gate.
+            notify_approval_needed_activity,
         ],
     )
 

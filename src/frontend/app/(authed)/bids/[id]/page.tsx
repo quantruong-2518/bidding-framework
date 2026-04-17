@@ -11,6 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { StatusBadge } from '@/components/bids/status-badge';
 import { TriageReviewPanel } from '@/components/bids/triage-review-panel';
+import { ReviewGatePanel } from '@/components/bids/review-gate-panel';
 import { WorkflowGraph } from '@/components/workflow/workflow-graph';
 import { StateDetail } from '@/components/workflow/state-detail';
 import {
@@ -126,6 +127,22 @@ export default function BidDetailPage(): React.ReactElement {
             <TriageReviewPanel bidId={id} triage={workflow.data?.triage} />
           )}
 
+          {currentState === 'S9' && (
+            <ReviewGatePanel
+              bidId={id}
+              round={workflow.data?.loop_back_history?.length ?? 0}
+              reviews={workflow.data?.reviews}
+            />
+          )}
+
+          {currentState === 'S9_BLOCKED' && (
+            <div className="rounded-md border border-destructive/60 bg-destructive/10 p-4 text-sm text-destructive">
+              <strong>Review gate blocked.</strong> The S9 gate exhausted all
+              review rounds or received a REJECT. Resolve out-of-band and
+              restart the workflow.
+            </div>
+          )}
+
           <StateDetail selected={selected ?? inferSelected(currentState)} status={workflow.data} />
 
           <Card>
@@ -163,6 +180,7 @@ function inferSelected(state: WorkflowState | null): NodeKind | null {
   if (state === 'S1_NO_BID') return 'S1';
   if (state === 'S2_DONE') return 'S2';
   if (state === 'S3') return 'S3a';
+  if (state === 'S9_BLOCKED') return 'S9';
   if (state === 'S11_DONE') return 'S11';
   return state as NodeKind;
 }

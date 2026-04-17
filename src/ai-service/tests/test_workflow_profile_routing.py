@@ -16,9 +16,14 @@ from temporalio.worker import Worker
 
 from workflows.base import BidProfile
 from workflows.bid_workflow import BidWorkflow
-from workflows.models import BidWorkflowInput, HumanTriageSignal, IntakeInput
+from workflows.models import (
+    BidWorkflowInput,
+    HumanReviewSignal,
+    HumanTriageSignal,
+    IntakeInput,
+)
 
-from tests.test_workflow import _ALL_ACTIVITIES
+from tests.test_workflow import _ALL_ACTIVITIES, _approve_review
 
 TASK_QUEUE = "test-profile-queue"
 
@@ -65,6 +70,10 @@ async def _run_for_profile(profile: BidProfile):
                     bid_profile_override=profile,
                 ),
             )
+            # Pre-queue enough approvals for each profile's reviewer count so
+            # the review gate clears without waiting.
+            for _ in range({"S": 1, "M": 1, "L": 3, "XL": 5}[profile]):
+                await handle.signal("human_review_decision", _approve_review())
             return await handle.result()
 
 

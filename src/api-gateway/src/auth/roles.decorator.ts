@@ -2,7 +2,14 @@ import { SetMetadata } from '@nestjs/common';
 
 export const ROLES_KEY = 'roles';
 
-export type AppRole = 'admin' | 'bid_manager' | 'ba' | 'sa' | 'qc';
+export type AppRole =
+  | 'admin'
+  | 'bid_manager'
+  | 'ba'
+  | 'sa'
+  | 'qc'
+  | 'domain_expert'
+  | 'solution_lead';
 
 /**
  * Declares the roles allowed to invoke a controller route.

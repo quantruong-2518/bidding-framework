@@ -18,6 +18,7 @@ from activities.commercial import commercial_activity
 from activities.convergence import convergence_activity
 from activities.domain_mining import domain_mining_activity
 from activities.intake import intake_activity
+from activities.notify import notify_approval_needed_activity
 from activities.retrospective import retrospective_activity
 from activities.review import review_activity
 from activities.sa_analysis import sa_analysis_activity
@@ -27,7 +28,23 @@ from activities.submission import submission_activity
 from activities.triage import triage_activity
 from activities.wbs import wbs_activity
 from workflows.bid_workflow import BidWorkflow
-from workflows.models import BidState, BidWorkflowInput, HumanTriageSignal, IntakeInput
+from workflows.models import (
+    BidState,
+    BidWorkflowInput,
+    HumanReviewSignal,
+    HumanTriageSignal,
+    IntakeInput,
+)
+
+
+def _approve_review(reviewer: str = "alice") -> HumanReviewSignal:
+    return HumanReviewSignal(
+        verdict="APPROVED",
+        reviewer=reviewer,
+        reviewer_role="bid_manager",
+        comments=[],
+        notes=None,
+    )
 
 TASK_QUEUE = "test-bid-queue"
 
@@ -50,6 +67,7 @@ _ALL_ACTIVITIES = [
     submission_activity,
     retrospective_activity,
     workspace_snapshot_activity,
+    notify_approval_needed_activity,
 ]
 
 _RFP_TEXT = (
@@ -88,6 +106,10 @@ async def _run_with_signal(signal: HumanTriageSignal):
                 task_queue=TASK_QUEUE,
             )
             await handle.signal("human_triage_decision", signal)
+            # Pre-queue an APPROVE for the S9 gate so the workflow reaches
+            # S11_DONE; rejected / timeout tests don't reach S9.
+            if signal.approved:
+                await handle.signal("human_review_decision", _approve_review())
             return await handle.result()
 
 
@@ -164,6 +186,7 @@ async def test_workflow_query_state_while_running() -> None:
             await handle.signal(
                 "human_triage_decision", HumanTriageSignal(approved=True, reviewer="alice")
             )
+            await handle.signal("human_review_decision", _approve_review())
             final = await handle.result()
             snapshot = await handle.query("get_state", result_type=BidState)
             assert snapshot.current_state == final.current_state == "S11_DONE"

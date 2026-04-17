@@ -13,6 +13,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { WorkflowsService } from './workflows.service';
 import { TriageSignalDto } from './triage-signal.dto';
+import { ReviewSignalDto } from './review-signal.dto';
 
 /**
  * Artifact keys exposed by Python `BidState`. Keep in sync with
@@ -64,6 +65,15 @@ export class WorkflowsController {
     @Body() dto: TriageSignalDto,
   ): Promise<unknown> {
     return this.workflowsService.sendTriageSignal(id, dto);
+  }
+
+  @Post('review-signal')
+  @Roles('admin', 'bid_manager', 'qc', 'sa', 'domain_expert', 'solution_lead')
+  review(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: ReviewSignalDto,
+  ): Promise<unknown> {
+    return this.workflowsService.sendReviewSignal(id, dto);
   }
 
   @Get('status')

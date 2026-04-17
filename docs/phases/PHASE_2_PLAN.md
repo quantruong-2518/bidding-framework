@@ -271,21 +271,92 @@ green (11 pre-existing + 3 new), 25/25 vitest green, `tsc --noEmit` clean,
 - Frontend upload uses demo-mode JWT — 401 will be returned by NestJS
   until the Keycloak realm lands. Phase-1 carry-over, not 2.3's scope.
 
-## Task 2.4: Human Approval Flow
+## Task 2.4: Human Approval Flow — **DONE 2026-04-18**
 - Temporal signals for approval/rejection
 - Review UI in frontend (approve, reject with feedback, route to state)
 - Notification system (email/webhook when approval needed)
 - Timeout & escalation (configurable per bid profile)
+
+### DELIVERED
+
+**Scope shipped:** real S9 review gate replacing the Phase 2.1 auto-approve
+stub. `human_review_decision` Temporal signal handler queues reviewer
+verdicts; `_run_s9_review_gate` iterates the per-profile reviewer count
+(S/M=1, L=3, XL=5), short-circuits on first non-APPROVED, aggregates
+verdict, either advances the pipeline or loops back to the earliest
+target (S2 / S5 / S6 / S8) declared in reviewer comments. 3-round cap
+terminates at `S9_BLOCKED` (new WorkflowState literal). Per-profile
+timeout (72h / 120h XL) terminates at `S9_BLOCKED` when no signal
+arrives.
+
+**Design deltas:**
+- Signal storage = FIFO list + monotonic `_review_consumed` cursor (not
+  single-slot `_review_signal = None` reset). Reason: pre-delivered
+  signals must not be dropped by the reset, and multi-reviewer rounds
+  need to consume in order anyway.
+- `notify_approval_needed_activity` publishes `{type:"approval_needed"}`
+  to `bid.events.channel.<bid_id>` via `redis.asyncio`. Wrapped in
+  try/except so a Redis outage never fails the workflow. Existing
+  `events.gateway.ts` relay picks it up — no new WebSocket channel.
+- NestJS guards signal with `current_state === 'S9'` pre-check →
+  returns 409 CONFLICT if the gate already resolved (double-submit
+  protection).
+- Artifact cleanup on loop-back is declarative (`_ARTIFACT_CLEANUP`
+  whitelist) — choosing target S5 resets `_hld/_wbs/_pricing/_proposal`,
+  target S2 resets the whole downstream chain.
+- Roles `domain_expert` / `solution_lead` added to `AppRole` for L/XL
+  reviewer authorisation.
+
+**Files:** see `CURRENT_STATE.md` Phase 2.6 + 2.4 Delivery Summary.
+**Tests:** 8 review-gate scenarios + 4 profile-routing scenarios + 3
+new workflows.controller specs + 2 new review-gate-panel tests.
+
+### Known gaps carried to Phase 3
+- Email / Slack notification (WebSocket only for now).
+- Parallel concurrent reviewer signatures (sequential today).
+- Reviewer auto-escalation on timeout (terminal `S9_BLOCKED` today;
+  ops must restart workflow).
+- XL multi-gate parity (C-level approval after the L gate) — deferred.
 
 ## Task 2.5: Real-time Updates
 - SSE for agent streaming (token-by-token output)
 - WebSocket for workflow state transitions
 - Redis Pub/Sub for Python workers -> NestJS -> Frontend
 
-## Task 2.6: Bid Profile Routing
+## Task 2.6: Bid Profile Routing — **DONE 2026-04-18**
 - S/M/L/XL profile configuration
 - Dynamic pipeline: skip/simplify states based on profile
 - Profile-specific review gate configuration
+
+### DELIVERED
+
+**Scope shipped:** declarative `_PROFILE_PIPELINE: dict[BidProfile,
+tuple[str,...]]` at the top of `bid_workflow.py`; `run()` iterates the
+active profile's pipeline via a while-loop so Phase 2.4 loop-backs can
+rewind the cursor.
+
+**Profile matrix:**
+- **Bid-S:** `(S0, S1, S2, S3, S4, S6, S8, S9, S10, S11)` — skips S3c
+  (via scoping re-route, pre-existing), S5 Solution Design, and S7
+  Commercial. `assembly.py` null-guards `hld=None` + `pricing=None`
+  (executive summary emits "TBD", solution section falls back to SA
+  tech-stack, commercial section notes deferred terms).
+- **Bid-M / Bid-L:** full 12-state pipeline.
+- **Bid-XL:** runs L pipeline; workflow logs
+  `XL_PARITY_PENDING phase=2.6` at entry. S3d/S3e + C-level multi-gate
+  deferred to Phase 3.
+
+**Stability guards:** `tests/conftest.py::_compress_gate_timeouts`
+autouse fixture shrinks `HUMAN_GATE_TIMEOUT`, `ACTIVITY_TIMEOUT`,
+`S3_ACTIVITY_TIMEOUT`, and `_S9_TIMEOUT` to 5s for every non-integration
+test so Temporal's time-skipping env settles fast.
+
+**Files:** `workflows/base.py` (adds `S9_BLOCKED` literal), `workflows/bid_workflow.py`,
+`activities/assembly.py`, `workflows/artifacts.py` (`hld/pricing` now
+`| None`), `tests/test_workflow_profile_routing.py`,
+`src/frontend/lib/utils/state-palette.ts`,
+`src/frontend/components/workflow/workflow-graph.tsx`,
+`docs/states/STATE_MACHINE.md`.
 
 ## Task 2.7: Bid Workspace in Obsidian — **DONE 2026-04-18**
 - Auto-create bid folder structure when bid starts

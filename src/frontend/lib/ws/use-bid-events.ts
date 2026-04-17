@@ -6,9 +6,21 @@ import { getSocket } from './socket';
 import { useAuthStore } from '@/lib/auth/store';
 import { bidKeys } from '@/lib/hooks/query-keys';
 
+export interface BidEvent {
+  type?: string;
+  state?: string;
+  workflow_id?: string;
+  round?: number;
+  reviewer_index?: number;
+  reviewer_count?: number;
+  profile?: string;
+  [key: string]: unknown;
+}
+
 export interface BidEventState {
   connected: boolean;
   lastEventAt: number | null;
+  approvalNeeded: BidEvent | null;
 }
 
 /**
@@ -20,6 +32,7 @@ export function useBidEvents(bidId: string | null | undefined): BidEventState {
   const token = useAuthStore((s) => s.accessToken);
   const [connected, setConnected] = useState(false);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [approvalNeeded, setApprovalNeeded] = useState<BidEvent | null>(null);
 
   useEffect(() => {
     if (!bidId || !token) {
@@ -38,8 +51,11 @@ export function useBidEvents(bidId: string | null | undefined): BidEventState {
       subscribe();
     };
     const onDisconnect = (): void => setConnected(false);
-    const onEvent = (): void => {
+    const onEvent = (payload?: BidEvent): void => {
       setLastEventAt(Date.now());
+      if (payload && payload.type === 'approval_needed') {
+        setApprovalNeeded(payload);
+      }
       void queryClient.invalidateQueries({ queryKey: bidKeys.workflow(bidId) });
       void queryClient.invalidateQueries({ queryKey: bidKeys.detail(bidId) });
     };
@@ -63,5 +79,5 @@ export function useBidEvents(bidId: string | null | undefined): BidEventState {
     };
   }, [bidId, token, queryClient]);
 
-  return { connected, lastEventAt };
+  return { connected, lastEventAt, approvalNeeded };
 }

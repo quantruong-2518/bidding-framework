@@ -15,6 +15,7 @@ from workflows.base import (  # re-exported below for backwards compatibility
     WorkflowState,
     utcnow,
 )
+from typing import Literal
 
 
 class IntakeInput(BaseModel):
@@ -79,11 +80,37 @@ from workflows.artifacts import (  # noqa: E402
     PricingDraft,
     ProposalPackage,
     RetrospectiveDraft,
+    ReviewComment,
     ReviewRecord,
+    ReviewVerdict,
+    ReviewerRole,
     SolutionArchitectureDraft,
     SubmissionRecord,
     WBSDraft,
 )
+
+
+class HumanReviewSignal(BaseModel):
+    """Payload delivered to the S9 human-review signal handler.
+
+    Sent by a reviewer through NestJS `POST /bids/:id/workflow/review-signal`.
+    `comments` populate the review record and drive the loop-back target.
+    """
+
+    verdict: ReviewVerdict
+    reviewer: str
+    reviewer_role: ReviewerRole
+    comments: list[ReviewComment] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class LoopBack(BaseModel):
+    """Audit record of one loop-back event during S9 review rounds."""
+
+    round: int
+    target_state: Literal["S2", "S5", "S6", "S8"]
+    reason: str
+    at: datetime
 
 
 class BidState(BaseModel):
@@ -110,6 +137,7 @@ class BidState(BaseModel):
     reviews: list[ReviewRecord] = Field(default_factory=list)
     submission: SubmissionRecord | None = None
     retrospective: RetrospectiveDraft | None = None
+    loop_back_history: list[LoopBack] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -143,6 +171,8 @@ __all__ = [
     "BidCard",
     "TriageDecision",
     "HumanTriageSignal",
+    "HumanReviewSignal",
+    "LoopBack",
     "ScopingResult",
     "BidState",
     "BidWorkflowInput",

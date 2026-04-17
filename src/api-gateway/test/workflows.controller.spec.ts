@@ -8,6 +8,13 @@ import { BidProfile, BidStatus, type Bid } from '../src/bids/bid.entity';
 import { WorkflowsController } from '../src/workflows/workflows.controller';
 import { WorkflowsService } from '../src/workflows/workflows.service';
 import type { TriageSignalDto } from '../src/workflows/triage-signal.dto';
+import {
+  ReviewCommentSeverity,
+  ReviewSignalDto,
+  ReviewTargetState,
+  ReviewVerdict,
+  ReviewerRole,
+} from '../src/workflows/review-signal.dto';
 
 describe('WorkflowsController', () => {
   let controller: WorkflowsController;
@@ -145,6 +152,83 @@ describe('WorkflowsController', () => {
     http.get.mockReturnValue(of(okResponse(statusPayload)));
     await expect(controller.artifact(baseBid.id, 'wbs')).rejects.toThrow(
       /has not been produced yet/,
+    );
+  });
+
+  // --- Phase 2.4 S9 review-signal routing ---------------------------------
+
+  const reviewDto: ReviewSignalDto = {
+    verdict: ReviewVerdict.CHANGES_REQUESTED,
+    reviewer: 'qc-anna',
+    reviewerRole: ReviewerRole.QC,
+    comments: [
+      {
+        section: 'Solution',
+        severity: ReviewCommentSeverity.MAJOR,
+        message: 'Rework the HLD',
+        targetState: ReviewTargetState.S5,
+      },
+    ],
+    notes: 'needs more depth',
+  };
+
+  it('POST review-signal forwards snake_case body when workflow is at S9', async () => {
+    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    // Status check (guard) + actual review-signal POST.
+    http.get.mockReturnValueOnce(
+      of(okResponse({ workflow_id: 'wf-42', current_state: 'S9' })),
+    );
+    http.post.mockReturnValue(of(okResponse({ status: 'accepted' })));
+
+    await controller.review(baseBid.id, reviewDto);
+
+    expect(http.post).toHaveBeenCalledWith(
+      'http://ai:8001/workflows/bid/wf-42/review-signal',
+      {
+        verdict: 'CHANGES_REQUESTED',
+        reviewer: 'qc-anna',
+        reviewer_role: 'qc',
+        comments: [
+          {
+            section: 'Solution',
+            severity: 'MAJOR',
+            message: 'Rework the HLD',
+            target_state: 'S5',
+          },
+        ],
+        notes: 'needs more depth',
+      },
+      expect.any(Object),
+    );
+  });
+
+  it('POST review-signal returns 409 when workflow has advanced past S9', async () => {
+    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    http.get.mockReturnValueOnce(
+      of(okResponse({ workflow_id: 'wf-42', current_state: 'S11_DONE' })),
+    );
+    await expect(controller.review(baseBid.id, reviewDto)).rejects.toThrow(
+      /S9 review gate already resolved/,
+    );
+    expect(http.post).not.toHaveBeenCalled();
+  });
+
+  it('POST review-signal bubbles ai-service 404 as NotFoundException', async () => {
+    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    http.get.mockReturnValueOnce(
+      of(okResponse({ workflow_id: 'wf-42', current_state: 'S9' })),
+    );
+    const upstreamErr = Object.assign(new Error('not found'), {
+      response: { status: 404, data: { detail: 'workflow gone' } },
+    });
+    http.post.mockReturnValue(
+      // rxjs throwError factory via synchronous throw inside firstValueFrom.
+      new (require('rxjs').Observable)((sub: { error: (e: unknown) => void }) =>
+        sub.error(upstreamErr),
+      ),
+    );
+    await expect(controller.review(baseBid.id, reviewDto)).rejects.toThrow(
+      /workflow gone/,
     );
   });
 });

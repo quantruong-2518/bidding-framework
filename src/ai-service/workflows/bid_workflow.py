@@ -3,12 +3,15 @@
 Order: S0 Intake -> S1 Triage (+ human gate) -> S2 Scoping ->
        S3 parallel (S3a BA / S3b SA / S3c Domain) -> S4 Convergence ->
        S5 Solution Design -> S6 WBS -> S7 Commercial -> S8 Assembly ->
-       S9 Review -> S10 Submission -> S11 Retrospective -> S11_DONE.
+       S9 Review Gate (Phase 2.4 human signal + loop-back) ->
+       S10 Submission -> S11 Retrospective -> S11_DONE.
 
-Phase 2.2: S3a/b/c call the real LangGraph-backed activities
-(`ba_analysis_activity`, `sa_analysis_activity`, `domain_mining_activity`).
-Each activity falls back to its deterministic stub when ANTHROPIC_API_KEY is
-not set, so the workflow stays runnable without an LLM key.
+Phase 2.2: S3a/b/c call the real LangGraph-backed activities.
+Phase 2.6: declarative `_PROFILE_PIPELINE` drives the iteration; Bid-S
+skips S5 + S7.
+Phase 2.4: S9 runs a real signal-based review gate with sequential
+multi-reviewer, per-profile timeout, 3-round cap, earliest-target
+loop-back, and best-effort `approval_needed` notification.
 """
 
 from __future__ import annotations
@@ -45,9 +48,54 @@ _STATE_DISPATCH_MAP: dict[str, str] = {
     "S6": "_run_s6_wbs",
     "S7": "_run_s7_commercial",
     "S8": "_run_s8_assembly",
-    "S9": "_run_s9_review",
+    "S9": "_run_s9_review_gate",
     "S10": "_run_s10_submission",
     "S11": "_run_s11_retrospective",
+}
+
+# --- Phase 2.4 S9 human review gate knobs -----------------------------------
+# Per-profile signal timeout per reviewer — defaults in plan (72h / 120h XL).
+_S9_TIMEOUT: dict[BidProfile, timedelta] = {
+    "S": timedelta(hours=72),
+    "M": timedelta(hours=72),
+    "L": timedelta(hours=72),
+    "XL": timedelta(hours=120),
+}
+
+# How many reviewers must sign off per round. Parallel concurrent is Phase 3;
+# for now run sequentially — any REJECT / CHANGES_REQUESTED short-circuits
+# the rest of the round.
+_S9_REVIEWER_COUNT: dict[BidProfile, int] = {
+    "S": 1,
+    "M": 1,
+    "L": 3,
+    "XL": 5,
+}
+
+_MAX_REVIEW_ROUNDS = 3
+
+# Explicit ordering of valid loop-back targets (earliest-first). Used for
+# aggregation when a reviewer's comments name multiple target_states.
+_LOOP_BACK_ORDER: tuple[str, ...] = ("S2", "S5", "S6", "S8")
+
+# Declarative white-list mapping: on loop-back to <target>, these
+# BidWorkflow attribute names must be reset to their initial value so
+# downstream artifacts don't leak from a stale round.
+_ARTIFACT_CLEANUP: dict[str, tuple[str, ...]] = {
+    "S2": (
+        "_scoping",
+        "_ba_draft",
+        "_sa_draft",
+        "_domain_notes",
+        "_convergence",
+        "_hld",
+        "_wbs",
+        "_pricing",
+        "_proposal_package",
+    ),
+    "S5": ("_hld", "_wbs", "_pricing", "_proposal_package"),
+    "S6": ("_wbs", "_pricing", "_proposal_package"),
+    "S8": ("_proposal_package",),
 }
 
 with workflow.unsafe.imports_passed_through():
@@ -58,6 +106,10 @@ with workflow.unsafe.imports_passed_through():
     from activities.convergence import convergence_activity
     from activities.domain_mining import domain_mining_activity
     from activities.intake import intake_activity
+    from activities.notify import (
+        NotifyApprovalInput,
+        notify_approval_needed_activity,
+    )
     from activities.retrospective import retrospective_activity
     from activities.review import review_activity
     from activities.sa_analysis import sa_analysis_activity
@@ -79,6 +131,7 @@ with workflow.unsafe.imports_passed_through():
         ProposalPackage,
         RetrospectiveDraft,
         RetrospectiveInput,
+        ReviewComment,
         ReviewInput,
         ReviewRecord,
         SolutionArchitectureDraft,
@@ -93,7 +146,9 @@ with workflow.unsafe.imports_passed_through():
         BidCard,
         BidState,
         BidWorkflowInput,
+        HumanReviewSignal,
         HumanTriageSignal,
+        LoopBack,
         ScopingResult,
         TriageDecision,
         WorkflowState,
@@ -147,11 +202,23 @@ class BidWorkflow:
         self._reviews: list[ReviewRecord] = []
         self._submission: SubmissionRecord | None = None
         self._retrospective: RetrospectiveDraft | None = None
+        # Phase 2.4 — S9 human review gate state. Signals queue up in order;
+        # gate consumes one per reviewer per round via a monotonic cursor so
+        # pre-delivered signals (e.g. in fast test envs) aren't dropped.
+        self._review_signals: list[HumanReviewSignal] = []
+        self._review_consumed: int = 0
+        self._review_round: int = 0
+        self._loop_back_history: list[LoopBack] = []
 
     @workflow.signal(name="human_triage_decision")
     def human_triage_decision(self, signal: HumanTriageSignal) -> None:
         """Gate resolver for S1 — called by NestJS when reviewer approves/rejects."""
         self._signal = signal
+
+    @workflow.signal(name="human_review_decision")
+    def human_review_decision(self, signal: HumanReviewSignal) -> None:
+        """S9 reviewer signal — appended to FIFO queue; consumed by the gate."""
+        self._review_signals.append(signal)
 
     @workflow.query(name="get_state")
     def get_state(self) -> BidState:
@@ -176,6 +243,7 @@ class BidWorkflow:
             reviews=list(self._reviews),
             submission=self._submission,
             retrospective=self._retrospective,
+            loop_back_history=list(self._loop_back_history),
             created_at=now,
             updated_at=now,
         )
@@ -416,10 +484,29 @@ class BidWorkflow:
             retry_policy=_DEFAULT_RETRY,
         )
 
-    async def _run_s9_review(self) -> None:
+    async def _run_s9_review_gate(self) -> None:
+        """Phase 2.4 real review gate.
+
+        Flow per round:
+          1. Run pre-human AI review (`review_activity`) → appends a ReviewRecord
+             flagging any consistency gaps.
+          2. For each reviewer (per-profile count), emit `approval_needed`
+             notification + wait for `human_review_decision` signal with
+             per-profile timeout. Any REJECT / CHANGES_REQUESTED
+             short-circuits remaining reviewers.
+          3. Aggregate the round's verdict:
+             - APPROVED by all reviewers → proceed (outer loop advances).
+             - CHANGES_REQUESTED → compute earliest target_state, clear
+               downstream artifacts, set `_state = target`, return.
+             - REJECTED → terminal `S9_BLOCKED`.
+          4. If round counter hits `_MAX_REVIEW_ROUNDS` without approval →
+             `S9_BLOCKED`.
+        """
         assert self._proposal_package and self._bid_card
         self._state = "S9"
-        record = await workflow.execute_activity(
+        profile: BidProfile = self._profile or "M"  # type: ignore[assignment]
+
+        pre_record = await workflow.execute_activity(
             review_activity,
             ReviewInput(
                 bid_id=self._bid_card.bid_id,
@@ -428,7 +515,162 @@ class BidWorkflow:
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
         )
-        self._reviews.append(record)
+        self._reviews.append(pre_record)
+
+        round_idx = self._review_round + 1
+        reviewer_count = _S9_REVIEWER_COUNT[profile]
+        timeout = _S9_TIMEOUT[profile]
+        final_verdict: str | None = None
+        last_record: ReviewRecord | None = None
+
+        for reviewer_idx in range(reviewer_count):
+            await self._notify_approval_needed(
+                round_idx=round_idx,
+                reviewer_idx=reviewer_idx,
+                reviewer_count=reviewer_count,
+                profile=profile,
+            )
+
+            try:
+                await workflow.wait_condition(
+                    lambda: len(self._review_signals) > self._review_consumed,
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                workflow.logger.info(
+                    "s9.gate.timeout round=%d reviewer=%d/%d",
+                    round_idx,
+                    reviewer_idx + 1,
+                    reviewer_count,
+                )
+                self._state = "S9_BLOCKED"
+                self._review_round = round_idx
+                return
+
+            signal = self._review_signals[self._review_consumed]
+            self._review_consumed += 1
+            record = ReviewRecord(
+                bid_id=self._bid_card.bid_id,
+                reviewer_role=signal.reviewer_role,
+                reviewer=signal.reviewer,
+                verdict=signal.verdict,
+                comments=list(signal.comments),
+                reviewed_at=workflow.now(),
+            )
+            self._reviews.append(record)
+            last_record = record
+            final_verdict = signal.verdict
+
+            if signal.verdict != "APPROVED":
+                break
+
+        self._review_round = round_idx
+
+        if final_verdict == "REJECTED":
+            self._state = "S9_BLOCKED"
+            return
+
+        if final_verdict == "CHANGES_REQUESTED":
+            assert last_record is not None
+            target = self._route_on_changes_requested(last_record, round_idx=round_idx)
+            if target is None:
+                # No valid target in the pipeline — degrade to S9_BLOCKED rather
+                # than silently APPROVE (safer default).
+                self._state = "S9_BLOCKED"
+                return
+            self._state = target  # type: ignore[assignment]
+            if round_idx >= _MAX_REVIEW_ROUNDS:
+                self._state = "S9_BLOCKED"
+                return
+            return
+
+    def _route_on_changes_requested(
+        self, record: ReviewRecord, round_idx: int
+    ) -> str | None:
+        """Pick earliest valid loop-back target + reset downstream artifacts.
+
+        Returns the chosen target state, or None if no valid target survives
+        the profile-pipeline check.
+        """
+        assert self._profile is not None
+        profile: BidProfile = self._profile  # type: ignore[assignment]
+        pipeline = _PROFILE_PIPELINE[profile]
+
+        # Earliest-target aggregation (Q7). Default target = S8 (minor).
+        ranks = {state: i for i, state in enumerate(_LOOP_BACK_ORDER)}
+        candidates = [
+            c.target_state for c in record.comments if c.target_state is not None
+        ]
+        if candidates:
+            candidates.sort(key=lambda s: ranks.get(s, len(ranks)))
+            chosen = candidates[0]
+        else:
+            chosen = "S8"
+
+        # Fall forward to nearest pipeline-resident state if the chosen target
+        # was skipped for this profile (e.g. S5 on Bid-S).
+        if chosen not in pipeline:
+            chosen_rank = ranks.get(chosen, 0)
+            forward_candidates = [
+                s
+                for s in pipeline
+                if s in _LOOP_BACK_ORDER and ranks[s] >= chosen_rank
+            ]
+            if not forward_candidates:
+                return None
+            chosen = forward_candidates[0]
+
+        for attr in _ARTIFACT_CLEANUP.get(chosen, ()):
+            setattr(self, attr, None)
+
+        reason_bits = [
+            f"[{c.severity}] {c.section}: {c.message}"
+            for c in record.comments
+        ]
+        reason = " | ".join(reason_bits) if reason_bits else "changes requested"
+        self._loop_back_history.append(
+            LoopBack(
+                round=round_idx,
+                target_state=chosen,  # type: ignore[arg-type]
+                reason=reason[:500],
+                at=workflow.now(),
+            )
+        )
+        workflow.logger.info(
+            "s9.loopback round=%d target=%s reviewer=%s",
+            round_idx,
+            chosen,
+            record.reviewer,
+        )
+        return chosen
+
+    async def _notify_approval_needed(
+        self,
+        *,
+        round_idx: int,
+        reviewer_idx: int,
+        reviewer_count: int,
+        profile: BidProfile,
+    ) -> None:
+        """Best-effort WebSocket toast that an S9 gate is waiting on a human."""
+        assert self._bid_card is not None
+        try:
+            await workflow.execute_activity(
+                notify_approval_needed_activity,
+                NotifyApprovalInput(
+                    bid_id=str(self._bid_card.bid_id),
+                    workflow_id=workflow.info().workflow_id,
+                    state="S9",
+                    profile=profile,
+                    round=round_idx,
+                    reviewer_index=reviewer_idx,
+                    reviewer_count=reviewer_count,
+                ),
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except Exception as exc:  # noqa: BLE001 — notification is best-effort
+            workflow.logger.warning("s9.notify.failed err=%s", exc)
 
     async def _run_s10_submission(self) -> None:
         assert self._proposal_package and self._bid_card
@@ -501,6 +743,7 @@ class BidWorkflow:
             reviews=list(self._reviews),
             submission=self._submission,
             retrospective=self._retrospective,
+            loop_back_history=list(self._loop_back_history),
             created_at=now,
             updated_at=now,
         )

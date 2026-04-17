@@ -1,6 +1,7 @@
 import { HttpService } from '@nestjs/axios';
 import {
   BadGatewayException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -14,6 +15,7 @@ import { firstValueFrom } from 'rxjs';
 import { BidsService } from '../bids/bids.service';
 import type { Bid } from '../bids/bid.entity';
 import type { TriageSignalDto } from './triage-signal.dto';
+import type { ReviewSignalDto } from './review-signal.dto';
 
 interface WorkflowStartResponse {
   workflow_id: string;
@@ -76,6 +78,42 @@ export class WorkflowsService {
       reviewer: signal.reviewer,
       notes: signal.notes,
       bid_profile_override: signal.bidProfileOverride,
+    };
+    return this.request<{ status: string }>('POST', url, body);
+  }
+
+  /**
+   * Forward a human S9 review decision to the running workflow.
+   *
+   * Returns 409 CONFLICT if the workflow is no longer at S9 — handles the
+   * double-submit / stale-signal race where the gate already advanced. The
+   * upstream ai-service will accept the signal either way; gating here is a
+   * UX safety net so the frontend can surface the race gracefully.
+   */
+  async sendReviewSignal(
+    bidId: string,
+    signal: ReviewSignalDto,
+  ): Promise<{ status: string }> {
+    const workflowId = this.requireWorkflowId(bidId);
+    const status = await this.getStatus(bidId);
+    const state = (status.current_state as string | undefined) ?? status.state;
+    if (state && state !== 'S9') {
+      throw new ConflictException(
+        `Workflow ${workflowId} is at state ${state}; S9 review gate already resolved.`,
+      );
+    }
+    const url = `${this.baseUrl()}/workflows/bid/${encodeURIComponent(workflowId)}/review-signal`;
+    const body = {
+      verdict: signal.verdict,
+      reviewer: signal.reviewer,
+      reviewer_role: signal.reviewerRole,
+      comments: (signal.comments ?? []).map((c) => ({
+        section: c.section,
+        severity: c.severity,
+        message: c.message,
+        target_state: c.targetState,
+      })),
+      notes: signal.notes,
     };
     return this.request<{ status: string }>('POST', url, body);
   }

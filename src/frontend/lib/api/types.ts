@@ -59,6 +59,48 @@ export const TriageSignalSchema = z.object({
 });
 export type TriageSignalInput = z.infer<typeof TriageSignalSchema>;
 
+// --- Phase 2.4 human review signal -----------------------------------------
+
+export const ReviewVerdict = z.enum([
+  'APPROVED',
+  'REJECTED',
+  'CHANGES_REQUESTED',
+]);
+export type ReviewVerdict = z.infer<typeof ReviewVerdict>;
+
+export const ReviewerRole = z.enum([
+  'bid_manager',
+  'ba',
+  'sa',
+  'qc',
+  'domain_expert',
+  'solution_lead',
+]);
+export type ReviewerRole = z.infer<typeof ReviewerRole>;
+
+export const ReviewCommentSeverity = z.enum(['NIT', 'MINOR', 'MAJOR', 'BLOCKER']);
+export type ReviewCommentSeverity = z.infer<typeof ReviewCommentSeverity>;
+
+export const ReviewTargetState = z.enum(['S2', 'S5', 'S6', 'S8']);
+export type ReviewTargetState = z.infer<typeof ReviewTargetState>;
+
+export const ReviewCommentSchema = z.object({
+  section: z.string().min(1).max(200),
+  severity: ReviewCommentSeverity,
+  message: z.string().min(1).max(2000),
+  targetState: ReviewTargetState.optional(),
+});
+export type ReviewCommentInput = z.infer<typeof ReviewCommentSchema>;
+
+export const ReviewSignalSchema = z.object({
+  verdict: ReviewVerdict,
+  reviewer: z.string().min(1).max(200),
+  reviewerRole: ReviewerRole,
+  comments: z.array(ReviewCommentSchema).max(50).default([]),
+  notes: z.string().max(2000).optional(),
+});
+export type ReviewSignalInput = z.infer<typeof ReviewSignalSchema>;
+
 /**
  * Mirrors Python BidState fields we care about in the UI. Fields are optional
  * because early states only populate a subset.
@@ -284,6 +326,13 @@ export interface ReviewRecord {
   reviewed_at: string;
 }
 
+export interface LoopBack {
+  round: number;
+  target_state: 'S2' | 'S5' | 'S6' | 'S8';
+  reason: string;
+  at: string;
+}
+
 export interface SubmissionRecord {
   bid_id: string;
   submitted_at: string;
@@ -336,6 +385,7 @@ export interface WorkflowStatus {
   reviews?: ReviewRecord[];
   submission?: SubmissionRecord;
   retrospective?: RetrospectiveDraft;
+  loop_back_history?: LoopBack[];
   [key: string]: unknown;
 }
 

@@ -3,31 +3,56 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 2.3 + 2.7 delivery — Conv-3 pair)
+## Last Updated: 2026-04-18 (Phase 2.6 + 2.4 delivery — Conv-4 pair)
 
-## Overall Status: PHASE 2.3 + 2.7 COMPLETE — next pair = Phase 2.4 + 2.6 (human approval + profile routing)
+## Overall Status: PHASE 2.6 + 2.4 COMPLETE — next pair = Phase 2.5 (SSE/WebSocket agent streaming)
 
 ## >>> NEXT ACTION <<<
-**Phase 2.4 + 2.6 (pair): Bid Profile routing + S9 human review gate with loop-back**
+**Phase 2.5 (solo): real-time agent streaming over SSE + existing socket.io fanout**
 
-Detailed execution plan locked in memory `project_phase_2_4_2_6_detailed_plan.md`: 11 design decisions, 34-step order, contract tables, ~1800 LOC, $0 LLM cost, 2 commits.
-
-**Ordering invariant:** 2.6 lands first (profile matrix defines valid loop-back targets), 2.4 layers on top.
-
-- **2.6 (first):** declarative `_PROFILE_PIPELINE: dict[BidProfile, tuple[State, ...]]` at top of `bid_workflow.py`; `run()` iterates the active pipeline. Bid-S skips S3c (via scoping re-route) + S5 + S7; keeps S11. Bid-M/L/XL run full pipeline. XL parity with S3d/S3e deferred to Phase 3. Assembly stub gets null-guards for `hld=None` + `pricing=None`.
-- **2.4 (second):** `@workflow.signal(name="human_review_decision")` handler on S9; sequential multi-reviewer per profile (S/M=1, L=3, XL=5); 3-round cap terminating at new `S9_BLOCKED` literal; earliest-target loop-back via `min(comment.target_state)`; 72h timeout (120h XL); `approval_needed` WebSocket event via new `notify_approval_needed_activity`; `ReviewGatePanel` frontend component mirroring `TriageReviewPanel`.
-
-**Stability guards baked in:** autouse conftest fixture compresses gate timeouts to 5s for non-integration tests; workflow determinism preserved (`workflow.now()` only); signal dedup (`self._review_signal = None` between rounds); NestJS 409-on-stale-signal; declarative `_ARTIFACT_CLEANUP` resets downstream artifacts on loop-back; notify-activity is best-effort (workflow never fails on Redis outage).
-
-**Optional intermediate step (live-LLM smoke for 2.2):**
-- Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker`.
-- `pytest -m integration -v` (exercises real BA/SA/Domain agents).
-- Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` no longer starts with `"Stub BA summary"`.
+See memory `project_phase_2_roadmap.md`: depends on Phase 2.2 live-LLM smoke (needs `ANTHROPIC_API_KEY`). If key still absent by Conv-5, swap with Phase 3.5 (Langfuse observability, $0 LLM). Rough scope: wire agent token callbacks → Redis XADD → existing `events.gateway.ts` relay, add `AgentStreamPanel` in frontend.
 
 **Optional intermediate step (live-LLM smoke for 2.2):**
 - Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker` (rebuild both — see `project_docker_image_split.md`).
 - Run the gated integration test: `pytest -m integration -v` (exercises real BA/SA/Domain agents).
 - Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` should no longer start with `"Stub BA summary"`.
+
+### Phase 2.6 + 2.4 Delivery Summary (2026-04-18, Conv-4 pair)
+**Scope:** declarative profile pipeline (2.6) + real S9 human review gate with signal + loop-back + multi-round cap + WebSocket notification (2.4).
+
+**Phase 2.6 (commit `8e96c17`):**
+- `workflows/bid_workflow.py` — `_PROFILE_PIPELINE: dict[BidProfile, tuple[str,...]]` + `_STATE_DISPATCH_MAP`; `run()` now iterates the active profile's pipeline.
+- Bid-S = `(S0, S1, S2, S3, S4, S6, S8, S9, S10, S11)` — skips S3c (via scoping re-route, pre-existing), S5 Solution Design, and S7 Commercial. Bid-M/L/XL = full 12-state pipeline; XL logs `XL_PARITY_PENDING` (S3d/S3e deferred to Phase 3).
+- `S9_BLOCKED` added as terminal in `WorkflowState` literal + frontend `state-palette.ts` (danger tone) + `workflow-graph.tsx::mainOrderForCompare`.
+- `AssemblyInput.hld` / `AssemblyInput.pricing` now `| None`; `assembly.py` null-guards both with Bid-S fallback text. `WBSInput.hld` likewise optional.
+- `tests/conftest.py::_compress_gate_timeouts` autouse fixture compresses `HUMAN_GATE_TIMEOUT` / `ACTIVITY_TIMEOUT` / `S3_ACTIVITY_TIMEOUT` / `_S9_TIMEOUT` to 5s for non-integration tests.
+- `tests/test_workflow_profile_routing.py` — 4 tests (Bid-S/M/L/XL).
+
+**Phase 2.4 (commit below):**
+- `workflows/models.py` — new `HumanReviewSignal`, `LoopBack` DTOs; `BidState.loop_back_history` field.
+- `workflows/bid_workflow.py` — `@workflow.signal("human_review_decision")` handler appends to a FIFO queue (`_review_signals` + `_review_consumed` cursor) so pre-delivered signals aren't dropped by `self._review_signal = None` resets. `_run_s9_review_gate` runs pre-human `review_activity` then iterates per-profile reviewer count (`_S9_REVIEWER_COUNT = {S:1, M:1, L:3, XL:5}`); per-profile timeout (`_S9_TIMEOUT`, 72h / 120h XL). Any REJECT / CHANGES_REQUESTED short-circuits remaining reviewers in the round. 3-round cap terminates at `S9_BLOCKED`. `_route_on_changes_requested` picks earliest target from `_LOOP_BACK_ORDER = ("S2","S5","S6","S8")`, falls forward to nearest pipeline-resident state on Bid-S (e.g. `target=S5` falls forward to S6), clears downstream artifacts via declarative `_ARTIFACT_CLEANUP`.
+- `activities/notify.py` (new) — `notify_approval_needed_activity` PUBLISHes `{type:"approval_needed",...}` to `bid.events.channel.<bid_id>` via `redis.asyncio`; wrapped in try/except so workflow never fails on Redis outage.
+- `activities/review.py` — renamed to `_pre_human_review_impl` + `review_activity` wrapper; same consistency-check derivation but verdict explicitly tagged `phase-2.4-pre-human`.
+- `workflows/router.py` — `POST /workflows/bid/{wf}/review-signal`.
+- `api-gateway/src/workflows/review-signal.dto.ts` (new) — class-validator DTO for `verdict / reviewer / reviewerRole / comments / notes`.
+- `workflows.service.ts::sendReviewSignal` — camelCase → snake_case transform; 409 CONFLICT if current_state ≠ S9 before forwarding.
+- `workflows.controller.ts` — `POST review-signal` gated `@Roles('admin','bid_manager','qc','sa','domain_expert','solution_lead')` (new roles added to `roles.decorator.ts`).
+- `frontend/components/bids/review-gate-panel.tsx` (new) — react-hook-form panel mirroring `TriageReviewPanel` shape; repeatable `comments[]` (section / severity / target_state); mounts at `currentState === 'S9'`.
+- `frontend/lib/ws/use-bid-events.ts` — adds `approvalNeeded` state from `bid.event.type === 'approval_needed'` payload.
+- Bid detail page renders `ReviewGatePanel` at S9 + `S9_BLOCKED` banner.
+
+**New / modified files:**
+- ai-service new: `activities/notify.py`, `tests/test_workflow_profile_routing.py`, `tests/test_workflow_review_gate.py`.
+- ai-service modified: `workflows/base.py`, `workflows/models.py`, `workflows/artifacts.py`, `workflows/bid_workflow.py`, `workflows/router.py`, `activities/assembly.py`, `activities/review.py`, `worker.py`, `tests/conftest.py`, `tests/test_workflow.py`.
+- api-gateway new: `src/workflows/review-signal.dto.ts`.
+- api-gateway modified: `src/workflows/workflows.controller.ts`, `src/workflows/workflows.service.ts`, `src/auth/roles.decorator.ts`, `test/workflows.controller.spec.ts`.
+- frontend new: `components/bids/review-gate-panel.tsx`, `__tests__/review-gate-panel.test.tsx`.
+- frontend modified: `lib/api/types.ts`, `lib/api/bids.ts`, `lib/hooks/use-bids.ts`, `lib/ws/use-bid-events.ts`, `lib/utils/state-palette.ts`, `components/workflow/workflow-graph.tsx`, `app/(authed)/bids/[id]/page.tsx`, `__tests__/state-palette.test.ts`.
+- docs: `docs/states/STATE_MACHINE.md` state matrix column flipped to "Status (2.6)" + SKIP (live) on S3c/S5/S7 for Bid-S + S9 row upgraded to "REAL (signal + loop-back)".
+
+**Tests:** 78 pytest (70 + 8 new review-gate) + 4 new profile routing already counted; 17 Jest (14 + 3 new review-signal specs); 29 vitest (27 + 2 new review-gate-panel tests). All green; 1 integration test deselected.
+
+**Live HTTP smoke:** not re-run (needs rebuilt ai-service + ai-worker images to pick up workflow bytecode; see `project_docker_image_split.md`). Recommended runbook: see plan step 31 in memory `project_phase_2_4_2_6_detailed_plan.md`.
 
 ### Phase 2.7 Delivery Summary (2026-04-18)
 **Scope:** per-bid Obsidian workspace under `kb-vault/bids/{bid_id}/`. `workspace_snapshot_activity` fires after every workflow phase; writes are best-effort (bid completion > vault completeness).
@@ -199,10 +224,9 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | 2.2 | Parallel agent execution (S3a, S3b, S3c) | DONE (deterministic-first) | Real BA/SA/Domain LangGraph agents + heuristic S4 convergence shipped. Each activity falls back to its stub until `ANTHROPIC_API_KEY` is set. 44/44 pytest pass; 1 integration test deselected |
 | 2.3 | Document parsing pipeline | DONE (pypdf MVP) | PDF + DOCX → ParsedRFP + BidCard suggestion. pypdf + python-docx (no Unstructured.io container); gateway proxy + frontend drop-zone; 13 new pytest + 3 new Jest |
 | 2.7 | Bid workspace in Obsidian | DONE | Flat `kb-vault/bids/{bid_id}/NN-*.md` layout; `workspace_snapshot_activity` after each phase; 15 render funcs with `kind: bid_output` frontmatter; best-effort (never blocks bid). Re-ingestion deferred to Phase 3 |
-| 2.4 | Human approval flow (Temporal signals) | NOT STARTED | S1 triage signal already exists as pattern; extend to S9 review gate |
+| 2.4 | Human approval flow (Temporal signals) | DONE | Real S9 gate: `human_review_decision` signal, sequential multi-reviewer, earliest-target loop-back with artifact cleanup, 3-round cap → S9_BLOCKED; `notify_approval_needed_activity` WS broadcast |
 | 2.5 | Real-time updates (SSE + WebSocket) | NOT STARTED | Redis + socket.io scaffold in place; needs agent-stream integration |
-| 2.6 | Bid Profile routing (S/M/L/XL) | NOT STARTED | Scoping already emits profile; workflow needs conditional skips |
-| 2.7 | Bid workspace in Obsidian (per-bid folders) | NOT STARTED | Retrospective stub already emits `kb_updates` placeholder path |
+| 2.6 | Bid Profile routing (S/M/L/XL) | DONE | `_PROFILE_PIPELINE` matrix; Bid-S skips S5/S7; assembly null-guards; XL logs parity-pending |
 
 ## Phase 3: Production Ready (Weeks 9-12)
 

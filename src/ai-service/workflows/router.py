@@ -14,6 +14,7 @@ from workflows.models import (
     BidCard,
     BidState,
     BidWorkflowInput,
+    HumanReviewSignal,
     HumanTriageSignal,
     IntakeInput,
     StartWorkflowResponse,
@@ -68,6 +69,21 @@ async def send_triage_signal(workflow_id: str, signal: HumanTriageSignal) -> dic
         await handle.signal("human_triage_decision", signal)
     except Exception as exc:  # noqa: BLE001 — surface any Temporal error as 404/500
         logger.exception("signal.error workflow=%s", workflow_id)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "accepted", "workflow_id": workflow_id}
+
+
+@router.post("/{workflow_id}/review-signal", status_code=202)
+async def send_review_signal(
+    workflow_id: str, signal: HumanReviewSignal
+) -> dict[str, str]:
+    """Forward a S9 human review decision to the running workflow."""
+    client = await get_temporal_client()
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        await handle.signal("human_review_decision", signal)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("review_signal.error workflow=%s", workflow_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "accepted", "workflow_id": workflow_id}
 

@@ -3,6 +3,7 @@ import type {
   Bid,
   CreateBidInput,
   UpdateBidInput,
+  ReviewSignalInput,
   TriageSignalInput,
   WorkflowStatus,
   WorkflowTrigger,
@@ -44,6 +45,16 @@ export function sendTriageSignal(
 ): Promise<{ status: string }> {
   return apiFetch<{ status: string }>(
     `/bids/${encodeURIComponent(id)}/workflow/triage-signal`,
+    { method: 'POST', body: input },
+  );
+}
+
+export function sendReviewSignal(
+  id: string,
+  input: ReviewSignalInput,
+): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(
+    `/bids/${encodeURIComponent(id)}/workflow/review-signal`,
     { method: 'POST', body: input },
   );
 }

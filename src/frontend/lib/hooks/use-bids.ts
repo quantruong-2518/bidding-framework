@@ -12,12 +12,14 @@ import {
   getBid,
   getWorkflowStatus,
   listBids,
+  sendReviewSignal,
   sendTriageSignal,
   triggerWorkflow,
 } from '@/lib/api/bids';
 import type {
   Bid,
   CreateBidInput,
+  ReviewSignalInput,
   TriageSignalInput,
   WorkflowStatus,
   WorkflowTrigger,
@@ -91,6 +93,21 @@ export function useSendTriageSignal(bidId: string): UseMutationResult<
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input) => sendTriageSignal(bidId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: bidKeys.workflow(bidId) });
+      void qc.invalidateQueries({ queryKey: bidKeys.detail(bidId) });
+    },
+  });
+}
+
+export function useSendReviewSignal(bidId: string): UseMutationResult<
+  { status: string },
+  Error,
+  ReviewSignalInput
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input) => sendReviewSignal(bidId, input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: bidKeys.workflow(bidId) });
       void qc.invalidateQueries({ queryKey: bidKeys.detail(bidId) });
