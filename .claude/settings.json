@@ -1,0 +1,52 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(docker *)",
+      "Bash(docker compose *)",
+      "Bash(poetry *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git push)",
+      "Bash(git push origin*)",
+      "Bash(curl -s http://localhost*)",
+      "Bash(pytest*)",
+      "Bash(python *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(chmod *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(docker system prune*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/secrets/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint-on-edit.sh\" \"$TOOL_INPUT_FILE_PATH\"",
+            "timeout": 15000
+          }
+        ]
+      }
+    ]
+  }
+}
