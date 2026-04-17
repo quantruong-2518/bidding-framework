@@ -39,18 +39,37 @@ function parseKeywords(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function CreateBidForm(): React.ReactElement {
+interface CreateBidFormProps {
+  /** Pre-fill values injected by an external source (e.g. RFP upload parser). */
+  initialValues?: Partial<FormValues>;
+  /** Remounts the form when bumped — lets callers overwrite current field state. */
+  resetToken?: number;
+}
+
+export function CreateBidForm({
+  initialValues,
+  resetToken,
+}: CreateBidFormProps = {}): React.ReactElement {
   const router = useRouter();
   const mutation = useCreateBid();
+  const seed = React.useMemo<FormValues>(
+    () => ({ ...DEFAULTS, ...(initialValues ?? {}) }),
+    [initialValues],
+  );
   const {
     control,
     register,
     handleSubmit,
+    reset,
     setError,
     formState: { errors },
   } = useForm<FormValues>({
-    defaultValues: DEFAULTS,
+    defaultValues: seed,
   });
+
+  React.useEffect(() => {
+    reset(seed);
+  }, [reset, seed, resetToken]);
 
   const onSubmit = handleSubmit(async (values) => {
     const keywords = parseKeywords(values.technologyKeywords);

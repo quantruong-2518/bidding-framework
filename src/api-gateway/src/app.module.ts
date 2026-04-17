@@ -7,6 +7,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { BidsModule } from './bids/bids.module';
 import { EventsModule } from './gateway/events.module';
+import { ParsersModule } from './parsers/parsers.module';
 import { RedisModule } from './redis/redis.module';
 import { WorkflowsModule } from './workflows/workflows.module';
 
@@ -20,6 +21,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     RedisModule,
     BidsModule,
     WorkflowsModule,
+    ParsersModule,
     EventsModule,
   ],
   controllers: [AppController],

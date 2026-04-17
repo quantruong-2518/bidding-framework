@@ -192,10 +192,84 @@ LangGraph agents run concurrently via `asyncio.gather` in S3.
 - Rebuild **both** `ai-service` and `ai-worker` images; force-recreate the
   worker container (per `project_docker_image_split.md`).
 
-## Task 2.3: Document Parsing Pipeline
-- Unstructured.io integration for PDF/DOCX
+## Task 2.3: Document Parsing Pipeline — **DONE 2026-04-17**
+- Unstructured.io integration for PDF/DOCX — **deferred; pypdf + python-docx MVP instead**
 - RFP parser: extract sections, requirements, tables
 - Auto-populate Bid Card from parsed RFP
+
+### DELIVERED
+
+**Scope shipped:** upload a PDF or DOCX RFP at `POST /bids/parse-rfp` and get
+back a `ParsedRFP` + a heuristic `BidCardSuggestion` the frontend pre-fills
+into the existing create-bid form. No new Docker service, no per-call LLM
+cost, no external API dependency.
+
+**Design delta from plan:** swapped Unstructured.io (1.5GB RAM container) for
+pypdf + python-docx (~1MB deps, pure Python). pypdf adapter adds a heading
+classifier (all-caps / numbered / markdown-hash) and ASCII-table detection;
+python-docx gives first-class heading + table access. The `ParsedRFP`
+contract is adapter-agnostic, so Phase 3 can drop in an Unstructured adapter
+for OCR / complex-table cases without touching the extractor or the endpoint.
+
+**New files:**
+- `src/ai-service/parsers/__init__.py`
+- `src/ai-service/parsers/models.py` — `ParsedRFP`, `Section`, `TableBlob`,
+  `BidCardSuggestion`, `ParseResponse`.
+- `src/ai-service/parsers/pypdf_adapter.py` — PDF → `ParsedRFP`; regex
+  heading classifier + ascii-pipe table sniffer; degrades cleanly on
+  malformed PDFs.
+- `src/ai-service/parsers/docx_adapter.py` — DOCX → `ParsedRFP`; uses Word
+  paragraph styles for real heading levels + captures each `<w:tbl>` as
+  pipe-joined raw text.
+- `src/ai-service/parsers/rfp_extractor.py` — `ParsedRFP` →
+  `BidCardSuggestion`. Industry dictionary (10 sectors) + region
+  dictionary (4 regions); modal-verb (`shall/must/should/may/will/…`)
+  regex + bullet detector for requirement candidates; tech-keyword
+  extractor; profile hint from page-count + table-count + requirement-count.
+- `src/ai-service/tests/test_parsers.py` — 13 unit tests (heading
+  classifier, section splitter, industry/region scoring, requirement
+  collection, DOCX end-to-end, empty-input guardrails).
+- `src/api-gateway/src/parsers/parsers.module.ts` +
+  `parsers.service.ts` + `parsers.controller.ts` — gateway proxy with
+  20MB multer limit, extension allow-list, `@Roles('admin','bid_manager')`.
+- `src/api-gateway/test/parsers.controller.spec.ts` — 3 Jest specs (happy
+  path, 415 on unsupported extension, 4xx mapping from ai-service).
+- `src/frontend/lib/api/parsers.ts` — `parseRfp(file)` helper with auth
+  injection.
+- `src/frontend/components/bids/rfp-upload.tsx` — drop-zone UI with
+  drag/drop + file-picker; client-side size + extension checks.
+- `src/frontend/components/bids/new-bid-shell.tsx` — client wrapper that
+  composes the upload + the existing create-bid form; maps the suggestion
+  into form seed values.
+
+**Modified files:**
+- `src/ai-service/pyproject.toml` — `pypdf`, `python-docx`,
+  `python-frontmatter` dependencies added.
+- `src/ai-service/workflows/router.py` — new `POST
+  /workflows/bid/parse-rfp` endpoint accepting `UploadFile`; dispatches to
+  `pypdf_adapter` or `docx_adapter` based on extension. 20MB limit + 415
+  on unknown type + 400 on empty/malformed.
+- `src/api-gateway/src/app.module.ts` — mounts `ParsersModule`.
+- `src/api-gateway/package.json` — adds `@types/multer` dev dep.
+- `src/frontend/components/bids/create-bid-form.tsx` — optional
+  `initialValues` + `resetToken` props; remounts form state when the
+  upload produces new suggestions.
+- `src/frontend/app/(authed)/bids/new/page.tsx` — replaces direct
+  `CreateBidForm` mount with `NewBidShell`.
+
+**Test results:** 13/13 new pytest green (total 57 pytest), 14/14 Jest
+green (11 pre-existing + 3 new), 25/25 vitest green, `tsc --noEmit` clean,
+`next build` succeeds.
+
+**Known gaps carried forward:**
+- OCR for scanned PDFs is not supported — pypdf only extracts embedded
+  text. Real-world scanned RFPs will need Unstructured.io (or Tika)
+  later. The `parsers/` abstraction makes this a pure add.
+- Table extraction is raw text, not structured cells. Downstream agents
+  currently ignore `tables[]`; BA/SA agents may use them as context in a
+  future iteration.
+- Frontend upload uses demo-mode JWT — 401 will be returned by NestJS
+  until the Keycloak realm lands. Phase-1 carry-over, not 2.3's scope.
 
 ## Task 2.4: Human Approval Flow
 - Temporal signals for approval/rejection

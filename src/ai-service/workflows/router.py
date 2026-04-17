@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from config.temporal import get_settings, get_temporal_client
+from parsers import docx_adapter, pypdf_adapter, rfp_extractor
+from parsers.models import ParseResponse
 from workflows.models import (
     BidCard,
     BidState,
@@ -68,6 +70,55 @@ async def send_triage_signal(workflow_id: str, signal: HumanTriageSignal) -> dic
         logger.exception("signal.error workflow=%s", workflow_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "accepted", "workflow_id": workflow_id}
+
+
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB — Word/PDF RFPs rarely exceed this
+
+
+def _dispatch_parser(filename: str, data: bytes) -> ParseResponse:
+    name = (filename or "").lower()
+    if name.endswith(".pdf"):
+        parsed = pypdf_adapter.parse_pdf_bytes(data, filename)
+    elif name.endswith(".docx"):
+        parsed = docx_adapter.parse_docx_bytes(data, filename)
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file extension for {filename!r}; upload .pdf or .docx",
+        )
+    suggestion = rfp_extractor.extract_bid_card(parsed)
+    return ParseResponse(parsed_rfp=parsed, suggested_bid_card=suggestion)
+
+
+@router.post("/parse-rfp", response_model=ParseResponse)
+async def parse_rfp(file: UploadFile = File(...)) -> ParseResponse:
+    """Parse an uploaded RFP (PDF or DOCX) into a ParsedRFP + BidCard suggestion.
+
+    The frontend pre-fills the "Create bid" form with the suggestion; the bid
+    manager reviews + edits before hitting `/start-from-card`.
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB upload limit.",
+        )
+    try:
+        response = _dispatch_parser(file.filename or "", data)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — malformed binaries bubble up here
+        logger.exception("parse_rfp.failed file=%s", file.filename)
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {exc}") from exc
+    logger.info(
+        "parse_rfp.done file=%s sections=%d reqs=%d",
+        file.filename,
+        len(response.parsed_rfp.sections),
+        len(response.suggested_bid_card.requirement_candidates),
+    )
+    return response
 
 
 @router.get("/{workflow_id}", response_model=BidState)

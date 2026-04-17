@@ -26,6 +26,9 @@ fastembed = "^0.3.0"  # task 1.4
 anyio = "^4.4.0"  # task 1.4
 cohere = "^5.10.0"  # task 1.4
 watchdog = "^5.0.0"  # task 1.5 — optional; ingestion falls back to polling
+pypdf = "^5.1.0"  # task 2.3 — pure-Python PDF text extraction
+python-docx = "^1.1.0"  # task 2.3 — DOCX heading/table extraction
+python-frontmatter = "^1.1.0"  # task 2.7 — markdown frontmatter round-trip for bid_output files
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

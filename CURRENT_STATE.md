@@ -3,20 +3,31 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-17 (Phase 2.2 delivery — deterministic-first)
+## Last Updated: 2026-04-17 (Phase 2.3 delivery — RFP parser MVP)
 
-## Overall Status: PHASE 2.2 COMPLETE (code) — live-LLM integration test pending `ANTHROPIC_API_KEY`
+## Overall Status: PHASE 2.3 COMPLETE — Phase 2.7 up next in the same Conv-3 pair
 
 ## >>> NEXT ACTION <<<
-**Phase 2.3 + 2.7 (pair): Document parsing (Unstructured.io) + per-bid Obsidian workspace**
-- Both tasks are filesystem IO, no LLM churn — natural pair per `project_phase_2_roadmap.md`.
-- 2.3: Unstructured.io container + RFP → BidCard auto-populate; add `profiles: ["parse"]` to `docker-compose.yml`.
-- 2.7: per-bid folder scaffold under `kb-vault/bids/<bid-id>/`; hook into `ingestion_service.py`.
+**Phase 2.7: Per-bid Obsidian workspace** (in-progress same conversation)
+- `kb_writer/` module + `workspace_snapshot_activity` writing flat `kb-vault/bids/{bid_id}/NN-*.md` layout after each workflow phase.
+- 14 markdown templates (one per artifact type) with `kind: bid_output` frontmatter.
+- Skip ingestion filtering in this pass — Phase 3 will revisit with multi-tenant isolation.
 
 **Optional intermediate step (live-LLM smoke for 2.2):**
 - Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker` (rebuild both — see `project_docker_image_split.md`).
 - Run the gated integration test: `pytest -m integration -v` (exercises real BA/SA/Domain agents).
 - Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` should no longer start with `"Stub BA summary"`.
+
+### Phase 2.3 Delivery Summary (2026-04-17)
+**Scope:** upload PDF/DOCX RFP → ParsedRFP → suggested BidCard pre-fill. No LLM, no new Docker service.
+
+**Design delta:** swapped Unstructured.io (1.5GB RAM container) for pypdf + python-docx (~1MB deps, pure Python). `parsers/` abstraction keeps the option open to plug Unstructured.io back in for OCR/complex-tables in Phase 3.
+
+**New files:** `src/ai-service/parsers/{__init__,models,pypdf_adapter,docx_adapter,rfp_extractor}.py`; `tests/test_parsers.py` (13 tests); `src/api-gateway/src/parsers/{parsers.module,controller,service}.ts`; `test/parsers.controller.spec.ts` (3 tests); `src/frontend/lib/api/parsers.ts`; `src/frontend/components/bids/{rfp-upload,new-bid-shell}.tsx`.
+
+**Modified:** `src/ai-service/pyproject.toml` (pypdf + python-docx + python-frontmatter deps); `workflows/router.py` (POST /workflows/bid/parse-rfp); `src/api-gateway/src/app.module.ts` (mount ParsersModule); `src/frontend/components/bids/create-bid-form.tsx` (accepts initialValues + resetToken props); `app/(authed)/bids/new/page.tsx` (uses NewBidShell).
+
+**Tests:** 57 pytest (44 + 13 new), 14/14 Jest (11 + 3 new), 25/25 vitest, tsc + next build clean.
 
 ### Live after Phase 2.1 (what a dev can run today)
 - `cd src && docker compose up --build -d` → **10** services healthy (~60–120s cold start)
@@ -164,7 +175,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 |---|---|---|---|
 | 2.1 | Complete 11-state DAG in Temporal | DONE | 11 deterministic stubs wired via asyncio.gather for S3; workflow reaches S11_DONE end-to-end |
 | 2.2 | Parallel agent execution (S3a, S3b, S3c) | DONE (deterministic-first) | Real BA/SA/Domain LangGraph agents + heuristic S4 convergence shipped. Each activity falls back to its stub until `ANTHROPIC_API_KEY` is set. 44/44 pytest pass; 1 integration test deselected |
-| 2.3 | Document parsing pipeline (Unstructured.io) | NOT STARTED | |
+| 2.3 | Document parsing pipeline | DONE (pypdf MVP) | PDF + DOCX → ParsedRFP + BidCard suggestion. pypdf + python-docx (no Unstructured.io container); gateway proxy + frontend drop-zone; 13 new pytest + 3 new Jest |
 | 2.4 | Human approval flow (Temporal signals) | NOT STARTED | S1 triage signal already exists as pattern; extend to S9 review gate |
 | 2.5 | Real-time updates (SSE + WebSocket) | NOT STARTED | Redis + socket.io scaffold in place; needs agent-stream integration |
 | 2.6 | Bid Profile routing (S/M/L/XL) | NOT STARTED | Scoping already emits profile; workflow needs conditional skips |
