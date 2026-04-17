@@ -8,11 +8,16 @@
 ## Overall Status: PHASE 2.3 + 2.7 COMPLETE — next pair = Phase 2.4 + 2.6 (human approval + profile routing)
 
 ## >>> NEXT ACTION <<<
-**Phase 2.4 + 2.6 (pair): Human approval flow + Bid Profile routing**
-- Both touch workflow gates, pair naturally per `project_phase_2_roadmap.md`.
-- 2.4: extend `human_triage_decision` pattern to S9 review gate; real reject/changes-requested loop-back (S9 → S8/S6/S5/S2); in-app WS notification on approval need.
-- 2.6: conditional skip/simplify S/M/L/XL pipelines — S profile skips S3c, S7 etc. Reuse `bid_card.estimated_profile` as the gate.
-- Zero LLM cost; low infra risk.
+**Phase 2.4 + 2.6 (pair): Bid Profile routing + S9 human review gate with loop-back**
+
+Detailed execution plan locked in memory `project_phase_2_4_2_6_detailed_plan.md`: 11 design decisions, 34-step order, contract tables, ~1800 LOC, $0 LLM cost, 2 commits.
+
+**Ordering invariant:** 2.6 lands first (profile matrix defines valid loop-back targets), 2.4 layers on top.
+
+- **2.6 (first):** declarative `_PROFILE_PIPELINE: dict[BidProfile, tuple[State, ...]]` at top of `bid_workflow.py`; `run()` iterates the active pipeline. Bid-S skips S3c (via scoping re-route) + S5 + S7; keeps S11. Bid-M/L/XL run full pipeline. XL parity with S3d/S3e deferred to Phase 3. Assembly stub gets null-guards for `hld=None` + `pricing=None`.
+- **2.4 (second):** `@workflow.signal(name="human_review_decision")` handler on S9; sequential multi-reviewer per profile (S/M=1, L=3, XL=5); 3-round cap terminating at new `S9_BLOCKED` literal; earliest-target loop-back via `min(comment.target_state)`; 72h timeout (120h XL); `approval_needed` WebSocket event via new `notify_approval_needed_activity`; `ReviewGatePanel` frontend component mirroring `TriageReviewPanel`.
+
+**Stability guards baked in:** autouse conftest fixture compresses gate timeouts to 5s for non-integration tests; workflow determinism preserved (`workflow.now()` only); signal dedup (`self._review_signal = None` between rounds); NestJS 409-on-stale-signal; declarative `_ARTIFACT_CLEANUP` resets downstream artifacts on loop-back; notify-activity is best-effort (workflow never fails on Redis outage).
 
 **Optional intermediate step (live-LLM smoke for 2.2):**
 - Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker`.
