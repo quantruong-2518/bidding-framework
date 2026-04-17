@@ -171,7 +171,11 @@ services:
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
       KB_VAULT_PATH: /kb-vault
     volumes:
+      # Main vault stays read-only so SME-authored notes can't be mutated by
+      # the pipeline. The per-bid workspace (Phase 2.7) needs to write — shadow
+      # mount that subfolder read-write on top.
       - ./kb-vault:/kb-vault:ro
+      - ./kb-vault/bids:/kb-vault/bids:rw
     ports:
       - "8001:8001"
     healthcheck:
@@ -208,7 +212,11 @@ services:
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
       KB_VAULT_PATH: /kb-vault
     volumes:
+      # Main vault stays read-only so SME-authored notes can't be mutated by
+      # the pipeline. The per-bid workspace (Phase 2.7) needs to write — shadow
+      # mount that subfolder read-write on top.
       - ./kb-vault:/kb-vault:ro
+      - ./kb-vault/bids:/kb-vault/bids:rw
 
   frontend:
     build:

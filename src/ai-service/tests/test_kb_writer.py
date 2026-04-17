@@ -53,6 +53,29 @@ def _expect_bid_output(post: frontmatter.Post, *, bid_id, artifact: str, phase: 
     assert "generated_at" in post.metadata
 
 
+def _no_accidental_code_blocks(content: str) -> list[str]:
+    r"""Return lines that would render as a Markdown code block (4+ leading spaces on non-table rows).
+
+    Table rows are fine — they start with ``| `` or ``|-``. Fenced code blocks are
+    explicit ``\`\`\`` so also ignored. Everything else with 4 leading spaces is
+    almost always a rendering bug from an over-indented source template.
+    """
+    offenders: list[str] = []
+    in_fence = False
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped.startswith("|"):  # table row
+            continue
+        if line.startswith("    ") and stripped:
+            offenders.append(line)
+    return offenders
+
+
 def test_render_bid_card_emits_frontmatter_and_content() -> None:
     card = BidCard(
         bid_id=uuid4(),
@@ -73,6 +96,8 @@ def test_render_bid_card_emits_frontmatter_and_content() -> None:
     assert "Modernise core platform." in content
     assert "kubernetes" in content
     assert "shall expose REST APIs" in content
+    # Regression-guard: Markdown treats 4+ leading spaces as a code block.
+    assert _no_accidental_code_blocks(content) == []
 
 
 def test_render_ba_contains_all_section_headers() -> None:
@@ -129,6 +154,7 @@ def test_render_ba_contains_all_section_headers() -> None:
         assert heading in content, f"missing heading: {heading}"
     assert "FR-001" in content
     assert "Legacy integration" in content
+    assert _no_accidental_code_blocks(content) == []
 
 
 def test_render_convergence_renders_conflicts_and_readiness() -> None:
@@ -156,6 +182,7 @@ def test_render_convergence_renders_conflicts_and_readiness() -> None:
     assert "HIGH" in content
     assert "0.72" in content
     assert "Readiness below gate" in content
+    assert _no_accidental_code_blocks(content) == []
 
 
 def test_render_proposal_renders_sections_and_checks() -> None:
@@ -186,6 +213,7 @@ def test_render_proposal_renders_sections_and_checks() -> None:
     assert "Technical approach" in content
     assert "sourced from: ba_draft" in content
     assert "❌" in content  # pricing_matches_wbs false
+    assert _no_accidental_code_blocks(content) == []
 
 
 def test_render_index_builds_wiki_links_for_present_artifacts() -> None:

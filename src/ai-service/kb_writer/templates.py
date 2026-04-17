@@ -1,14 +1,14 @@
 """Render Pydantic artifact DTOs into markdown with `kind: bid_output` frontmatter.
 
-Plain f-string + `textwrap.dedent` — no Jinja dep. Each render function takes the
-artifact (and bid_id + phase where the artifact doesn't carry them) and returns
-a full markdown string ready to write to disk.
+Each render function composes a list of markdown lines, joins them with `\\n`,
+then wraps the result with standard frontmatter via `_wrap`. No `textwrap.dedent`
+— interpolated multi-line values would break the common-prefix strip and
+leading whitespace would be interpreted as a code block by Markdown renderers.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from textwrap import dedent
 from typing import Iterable
 from uuid import UUID
 
@@ -62,32 +62,30 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join([head, sep, body])
 
 
+def _section(heading: str, body: str) -> list[str]:
+    return [f"## {heading}", "", body, ""]
+
+
+def _join(parts: list[str]) -> str:
+    return "\n".join(parts)
+
+
 # --- S0 Bid Card ------------------------------------------------------------
 
 
 def render_bid_card(card: BidCard) -> str:
-    body = dedent(
-        f"""\
-        **Client:** {card.client_name}
-        **Industry:** {card.industry}
-        **Region:** {card.region}
-        **Deadline:** {card.deadline.isoformat()}
-        **Estimated profile:** {card.estimated_profile}
-
-        ## Scope summary
-
-        {card.scope_summary or "_(empty)_"}
-
-        ## Technology keywords
-
-        {_bullets(card.technology_keywords)}
-
-        ## Raw requirements
-
-        {_bullets(card.requirements_raw)}
-        """
-    )
-    return _wrap(body, bid_id=card.bid_id, phase="S0_DONE", artifact="bid_card", title=f"Bid Card — {card.client_name}")
+    parts: list[str] = [
+        f"**Client:** {card.client_name}",
+        f"**Industry:** {card.industry}",
+        f"**Region:** {card.region}",
+        f"**Deadline:** {card.deadline.isoformat()}",
+        f"**Estimated profile:** {card.estimated_profile}",
+        "",
+        *_section("Scope summary", card.scope_summary or "_(empty)_"),
+        *_section("Technology keywords", _bullets(card.technology_keywords)),
+        *_section("Raw requirements", _bullets(card.requirements_raw)),
+    ]
+    return _wrap(_join(parts), bid_id=card.bid_id, phase="S0_DONE", artifact="bid_card", title=f"Bid Card — {card.client_name}")
 
 
 # --- S1 Triage --------------------------------------------------------------
@@ -95,21 +93,14 @@ def render_bid_card(card: BidCard) -> str:
 
 def render_triage(triage: TriageDecision, *, bid_id: UUID) -> str:
     score_rows = [[k, f"{v:.2f}"] for k, v in triage.score_breakdown.items()]
-    body = dedent(
-        f"""\
-        **Recommendation:** {triage.recommendation}
-        **Overall score:** {triage.overall_score:.2f}
-
-        ## Rationale
-
-        {triage.rationale}
-
-        ## Score breakdown
-
-        {_table(["Criterion", "Score"], score_rows)}
-        """
-    )
-    return _wrap(body, bid_id=bid_id, phase="S1_DONE", artifact="triage", title="Triage Decision")
+    parts: list[str] = [
+        f"**Recommendation:** {triage.recommendation}",
+        f"**Overall score:** {triage.overall_score:.2f}",
+        "",
+        *_section("Rationale", triage.rationale),
+        *_section("Score breakdown", _table(["Criterion", "Score"], score_rows)),
+    ]
+    return _wrap(_join(parts), bid_id=bid_id, phase="S1_DONE", artifact="triage", title="Triage Decision")
 
 
 # --- S2 Scoping -------------------------------------------------------------
@@ -123,22 +114,21 @@ def render_scoping(scoping: ScopingResult, *, bid_id: UUID) -> str:
     stream_rows = [[stream, ", ".join(atoms)] for stream, atoms in scoping.stream_assignments.items()]
     team_rows = [[role, str(count)] for role, count in scoping.team_suggestion.items()]
 
-    body = dedent(
-        f"""\
-        ## Requirement atoms ({len(scoping.requirement_map)})
-
-        {_table(["ID", "Category", "Text"], atom_rows)}
-
-        ## Stream assignments
-
-        {_table(["Stream", "Atoms"], stream_rows) if stream_rows else "_(none)_"}
-
-        ## Team suggestion
-
-        {_table(["Role", "Count"], team_rows) if team_rows else "_(none)_"}
-        """
-    )
-    return _wrap(body, bid_id=bid_id, phase="S2_DONE", artifact="scoping", title="Scoping Result")
+    parts: list[str] = [
+        *_section(
+            f"Requirement atoms ({len(scoping.requirement_map)})",
+            _table(["ID", "Category", "Text"], atom_rows),
+        ),
+        *_section(
+            "Stream assignments",
+            _table(["Stream", "Atoms"], stream_rows) if stream_rows else "_(none)_",
+        ),
+        *_section(
+            "Team suggestion",
+            _table(["Role", "Count"], team_rows) if team_rows else "_(none)_",
+        ),
+    ]
+    return _wrap(_join(parts), bid_id=bid_id, phase="S2_DONE", artifact="scoping", title="Scoping Result")
 
 
 # --- S3a Business Analysis -------------------------------------------------
@@ -151,56 +141,25 @@ def render_ba(draft: BusinessRequirementsDraft) -> str:
     risk_rows = [[r.title, r.likelihood, r.impact, r.mitigation] for r in draft.risks]
     similar_rows = [[s.project_id, f"{s.relevance_score:.2f}", s.why_relevant] for s in draft.similar_projects]
 
-    body = dedent(
-        f"""\
-        **Confidence:** {draft.confidence:.2f}
-
-        ## Executive summary
-
-        {draft.executive_summary or "_(empty)_"}
-
-        ## Business objectives
-
-        {_bullets(draft.business_objectives)}
-
-        ## In scope
-
-        {_bullets(draft.scope.get("in_scope", []))}
-
-        ## Out of scope
-
-        {_bullets(draft.scope.get("out_of_scope", []))}
-
-        ## Functional requirements
-
-        {_table(["ID", "Priority", "Title", "Description"], [fr_row(fr) for fr in draft.functional_requirements])}
-
-        ## Assumptions
-
-        {_bullets(draft.assumptions)}
-
-        ## Constraints
-
-        {_bullets(draft.constraints)}
-
-        ## Success criteria
-
-        {_bullets(draft.success_criteria)}
-
-        ## Risks
-
-        {_table(["Title", "Likelihood", "Impact", "Mitigation"], risk_rows)}
-
-        ## Similar projects
-
-        {_table(["Project ID", "Relevance", "Why relevant"], similar_rows)}
-
-        ## Sources
-
-        {_bullets(draft.sources)}
-        """
-    )
-    return _wrap(body, bid_id=draft.bid_id, phase="S3_DONE", artifact="ba_draft", title="Business Requirements Draft")
+    parts: list[str] = [
+        f"**Confidence:** {draft.confidence:.2f}",
+        "",
+        *_section("Executive summary", draft.executive_summary or "_(empty)_"),
+        *_section("Business objectives", _bullets(draft.business_objectives)),
+        *_section("In scope", _bullets(draft.scope.get("in_scope", []))),
+        *_section("Out of scope", _bullets(draft.scope.get("out_of_scope", []))),
+        *_section(
+            "Functional requirements",
+            _table(["ID", "Priority", "Title", "Description"], [fr_row(fr) for fr in draft.functional_requirements]),
+        ),
+        *_section("Assumptions", _bullets(draft.assumptions)),
+        *_section("Constraints", _bullets(draft.constraints)),
+        *_section("Success criteria", _bullets(draft.success_criteria)),
+        *_section("Risks", _table(["Title", "Likelihood", "Impact", "Mitigation"], risk_rows)),
+        *_section("Similar projects", _table(["Project ID", "Relevance", "Why relevant"], similar_rows)),
+        *_section("Sources", _bullets(draft.sources)),
+    ]
+    return _wrap(_join(parts), bid_id=draft.bid_id, phase="S3_DONE", artifact="ba_draft", title="Business Requirements Draft")
 
 
 # --- S3b Solution Architecture ---------------------------------------------
@@ -212,36 +171,17 @@ def render_sa(draft: SolutionArchitectureDraft) -> str:
     nfr_rows = [[k, v] for k, v in draft.nfr_targets.items()]
     risk_rows = [[r.title, r.likelihood, r.impact, r.mitigation] for r in draft.technical_risks]
 
-    body = dedent(
-        f"""\
-        **Confidence:** {draft.confidence:.2f}
-
-        ## Tech stack
-
-        {_table(["Layer", "Choice", "Rationale"], stack_rows)}
-
-        ## Architecture patterns
-
-        {_table(["Pattern", "Description", "Applies to"], pattern_rows)}
-
-        ## NFR targets
-
-        {_table(["Key", "Target"], nfr_rows)}
-
-        ## Technical risks
-
-        {_table(["Title", "Likelihood", "Impact", "Mitigation"], risk_rows)}
-
-        ## Integrations
-
-        {_bullets(draft.integrations)}
-
-        ## Sources
-
-        {_bullets(draft.sources)}
-        """
-    )
-    return _wrap(body, bid_id=draft.bid_id, phase="S3_DONE", artifact="sa_draft", title="Solution Architecture Draft")
+    parts: list[str] = [
+        f"**Confidence:** {draft.confidence:.2f}",
+        "",
+        *_section("Tech stack", _table(["Layer", "Choice", "Rationale"], stack_rows)),
+        *_section("Architecture patterns", _table(["Pattern", "Description", "Applies to"], pattern_rows)),
+        *_section("NFR targets", _table(["Key", "Target"], nfr_rows)),
+        *_section("Technical risks", _table(["Title", "Likelihood", "Impact", "Mitigation"], risk_rows)),
+        *_section("Integrations", _bullets(draft.integrations)),
+        *_section("Sources", _bullets(draft.sources)),
+    ]
+    return _wrap(_join(parts), bid_id=draft.bid_id, phase="S3_DONE", artifact="sa_draft", title="Solution Architecture Draft")
 
 
 # --- S3c Domain Notes -------------------------------------------------------
@@ -255,73 +195,48 @@ def render_domain(notes: DomainNotes) -> str:
     practice_rows = [[p.title, p.description] for p in notes.best_practices]
     glossary_rows = [[term, definition] for term, definition in notes.glossary.items()]
 
-    body = dedent(
-        f"""\
-        **Industry:** {notes.industry}
-        **Confidence:** {notes.confidence:.2f}
-
-        ## Compliance
-
-        {_table(["Framework", "Requirement", "Applies", "Notes"], compliance_rows)}
-
-        ## Best practices
-
-        {_table(["Title", "Description"], practice_rows)}
-
-        ## Industry constraints
-
-        {_bullets(notes.industry_constraints)}
-
-        ## Glossary
-
-        {_table(["Term", "Definition"], glossary_rows)}
-
-        ## Sources
-
-        {_bullets(notes.sources)}
-        """
-    )
-    return _wrap(body, bid_id=notes.bid_id, phase="S3_DONE", artifact="domain_notes", title="Domain Notes")
+    parts: list[str] = [
+        f"**Industry:** {notes.industry}",
+        f"**Confidence:** {notes.confidence:.2f}",
+        "",
+        *_section("Compliance", _table(["Framework", "Requirement", "Applies", "Notes"], compliance_rows)),
+        *_section("Best practices", _table(["Title", "Description"], practice_rows)),
+        *_section("Industry constraints", _bullets(notes.industry_constraints)),
+        *_section("Glossary", _table(["Term", "Definition"], glossary_rows)),
+        *_section("Sources", _bullets(notes.sources)),
+    ]
+    return _wrap(_join(parts), bid_id=notes.bid_id, phase="S3_DONE", artifact="domain_notes", title="Domain Notes")
 
 
 # --- S4 Convergence ---------------------------------------------------------
 
 
 def render_convergence(report: ConvergenceReport) -> str:
-    def conflict_section(c: StreamConflict) -> str:
-        return dedent(
-            f"""\
-            ### {c.topic} ({c.severity})
-
-            - **Streams:** {", ".join(c.streams)}
-            - **Description:** {c.description}
-            - **Proposed resolution:** {c.proposed_resolution}
-            """
-        ).rstrip()
+    def conflict_block(c: StreamConflict) -> str:
+        return _join(
+            [
+                f"### {c.topic} ({c.severity})",
+                "",
+                f"- **Streams:** {', '.join(c.streams)}",
+                f"- **Description:** {c.description}",
+                f"- **Proposed resolution:** {c.proposed_resolution}",
+            ]
+        )
 
     readiness_rows = [[k, f"{v:.2f}"] for k, v in report.readiness.items()]
-    conflicts_md = "\n\n".join(conflict_section(c) for c in report.conflicts) if report.conflicts else "_(no conflicts detected)_"
-
-    body = dedent(
-        f"""\
-        ## Unified summary
-
-        {report.unified_summary}
-
-        ## Readiness
-
-        {_table(["Stream", "Score"], readiness_rows)}
-
-        ## Conflicts ({len(report.conflicts)})
-
-        {conflicts_md}
-
-        ## Open questions
-
-        {_bullets(report.open_questions)}
-        """
+    conflicts_md = (
+        "\n\n".join(conflict_block(c) for c in report.conflicts)
+        if report.conflicts
+        else "_(no conflicts detected)_"
     )
-    return _wrap(body, bid_id=report.bid_id, phase="S4_DONE", artifact="convergence", title="Convergence Report")
+
+    parts: list[str] = [
+        *_section("Unified summary", report.unified_summary),
+        *_section("Readiness", _table(["Stream", "Score"], readiness_rows)),
+        *_section(f"Conflicts ({len(report.conflicts)})", conflicts_md),
+        *_section("Open questions", _bullets(report.open_questions)),
+    ]
+    return _wrap(_join(parts), bid_id=report.bid_id, phase="S4_DONE", artifact="convergence", title="Convergence Report")
 
 
 # --- S5 HLD -----------------------------------------------------------------
@@ -329,34 +244,15 @@ def render_convergence(report: ConvergenceReport) -> str:
 
 def render_hld(hld: HLDDraft) -> str:
     comp_rows = [[c.name, c.responsibility, ", ".join(c.depends_on)] for c in hld.components]
-    body = dedent(
-        f"""\
-        ## Architecture overview
-
-        {hld.architecture_overview or "_(empty)_"}
-
-        ## Components
-
-        {_table(["Name", "Responsibility", "Depends on"], comp_rows)}
-
-        ## Data flows
-
-        {_bullets(hld.data_flows)}
-
-        ## Integration points
-
-        {_bullets(hld.integration_points)}
-
-        ## Security approach
-
-        {hld.security_approach or "_(empty)_"}
-
-        ## Deployment model
-
-        {hld.deployment_model or "_(empty)_"}
-        """
-    )
-    return _wrap(body, bid_id=hld.bid_id, phase="S5_DONE", artifact="hld", title="High-Level Design")
+    parts: list[str] = [
+        *_section("Architecture overview", hld.architecture_overview or "_(empty)_"),
+        *_section("Components", _table(["Name", "Responsibility", "Depends on"], comp_rows)),
+        *_section("Data flows", _bullets(hld.data_flows)),
+        *_section("Integration points", _bullets(hld.integration_points)),
+        *_section("Security approach", hld.security_approach or "_(empty)_"),
+        *_section("Deployment model", hld.deployment_model or "_(empty)_"),
+    ]
+    return _wrap(_join(parts), bid_id=hld.bid_id, phase="S5_DONE", artifact="hld", title="High-Level Design")
 
 
 # --- S6 WBS -----------------------------------------------------------------
@@ -374,18 +270,17 @@ def render_wbs(wbs: WBSDraft) -> str:
         ]
         for item in wbs.items
     ]
-    body = dedent(
-        f"""\
-        **Total effort:** {wbs.total_effort_md:.1f} MD
-        **Timeline:** {wbs.timeline_weeks} weeks
-        **Critical path:** {", ".join(wbs.critical_path) if wbs.critical_path else "_(none)_"}
-
-        ## Work breakdown
-
-        {_table(["ID", "Name", "Parent", "Effort (MD)", "Owner", "Depends on"], rows)}
-        """
-    )
-    return _wrap(body, bid_id=wbs.bid_id, phase="S6_DONE", artifact="wbs", title="Work Breakdown Structure")
+    parts: list[str] = [
+        f"**Total effort:** {wbs.total_effort_md:.1f} MD",
+        f"**Timeline:** {wbs.timeline_weeks} weeks",
+        f"**Critical path:** {', '.join(wbs.critical_path) if wbs.critical_path else '_(none)_'}",
+        "",
+        *_section(
+            "Work breakdown",
+            _table(["ID", "Name", "Parent", "Effort (MD)", "Owner", "Depends on"], rows),
+        ),
+    ]
+    return _wrap(_join(parts), bid_id=wbs.bid_id, phase="S6_DONE", artifact="wbs", title="Work Breakdown Structure")
 
 
 # --- S7 Pricing -------------------------------------------------------------
@@ -397,58 +292,42 @@ def render_pricing(pricing: PricingDraft) -> str:
         for line in pricing.lines
     ]
     scenario_rows = [[name, f"{total:.2f}"] for name, total in pricing.scenarios.items()]
-    body = dedent(
-        f"""\
-        **Model:** {pricing.model}
-        **Currency:** {pricing.currency}
-        **Subtotal:** {pricing.subtotal:.2f}
-        **Margin:** {pricing.margin_pct:.1f}%
-        **Total:** {pricing.total:.2f}
-
-        ## Line items
-
-        {_table(["Label", "Amount", "Unit", "Notes"], line_rows)}
-
-        ## Scenarios
-
-        {_table(["Scenario", "Total"], scenario_rows) if scenario_rows else "_(none)_"}
-
-        ## Notes
-
-        {pricing.notes or "_(empty)_"}
-        """
-    )
-    return _wrap(body, bid_id=pricing.bid_id, phase="S7_DONE", artifact="pricing", title="Pricing Draft")
+    parts: list[str] = [
+        f"**Model:** {pricing.model}",
+        f"**Currency:** {pricing.currency}",
+        f"**Subtotal:** {pricing.subtotal:.2f}",
+        f"**Margin:** {pricing.margin_pct:.1f}%",
+        f"**Total:** {pricing.total:.2f}",
+        "",
+        *_section("Line items", _table(["Label", "Amount", "Unit", "Notes"], line_rows)),
+        *_section("Scenarios", _table(["Scenario", "Total"], scenario_rows) if scenario_rows else "_(none)_"),
+        *_section("Notes", pricing.notes or "_(empty)_"),
+    ]
+    return _wrap(_join(parts), bid_id=pricing.bid_id, phase="S7_DONE", artifact="pricing", title="Pricing Draft")
 
 
 # --- S8 Proposal ------------------------------------------------------------
 
 
 def render_proposal(pkg: ProposalPackage) -> str:
-    section_bodies: list[str] = []
+    section_blocks: list[str] = []
     for section in pkg.sections:
         sources = f" _(sourced from: {', '.join(section.sourced_from)})_" if section.sourced_from else ""
-        section_bodies.append(f"## {section.heading}{sources}\n\n{section.body_markdown.strip()}")
-    body_md = "\n\n".join(section_bodies) if section_bodies else "_(no sections)_"
+        section_blocks.append(f"## {section.heading}{sources}\n\n{section.body_markdown.strip()}")
+    sections_md = "\n\n".join(section_blocks) if section_blocks else "_(no sections)_"
     check_rows = [[k, "✅" if v else "❌"] for k, v in pkg.consistency_checks.items()]
-    body = dedent(
-        f"""\
-        **Title:** {pkg.title}
 
-        ## Sections ({len(pkg.sections)})
-
-        {body_md}
-
-        ## Appendices
-
-        {_bullets(pkg.appendices)}
-
-        ## Consistency checks
-
-        {_table(["Check", "Pass"], check_rows) if check_rows else "_(none)_"}
-        """
-    )
-    return _wrap(body, bid_id=pkg.bid_id, phase="S8_DONE", artifact="proposal_package", title=pkg.title)
+    parts: list[str] = [
+        f"**Title:** {pkg.title}",
+        "",
+        f"## Sections ({len(pkg.sections)})",
+        "",
+        sections_md,
+        "",
+        *_section("Appendices", _bullets(pkg.appendices)),
+        *_section("Consistency checks", _table(["Check", "Pass"], check_rows) if check_rows else "_(none)_"),
+    ]
+    return _wrap(_join(parts), bid_id=pkg.bid_id, phase="S8_DONE", artifact="proposal_package", title=pkg.title)
 
 
 # --- S9 Review --------------------------------------------------------------
@@ -459,19 +338,20 @@ def render_review(record: ReviewRecord, *, round_index: int) -> str:
         [c.section, c.severity, c.message, c.target_state or ""]
         for c in record.comments
     ]
-    body = dedent(
-        f"""\
-        **Reviewer:** {record.reviewer} ({record.reviewer_role})
-        **Verdict:** {record.verdict}
-        **Reviewed at:** {record.reviewed_at.isoformat()}
-        **Round:** {round_index}
-
-        ## Comments
-
-        {_table(["Section", "Severity", "Message", "Target state"], comment_rows) if comment_rows else "_(no comments)_"}
-        """
-    )
-    return _wrap(body, bid_id=record.bid_id, phase="S9_DONE", artifact="review", title=f"Review round {round_index} — {record.reviewer}")
+    parts: list[str] = [
+        f"**Reviewer:** {record.reviewer} ({record.reviewer_role})",
+        f"**Verdict:** {record.verdict}",
+        f"**Reviewed at:** {record.reviewed_at.isoformat()}",
+        f"**Round:** {round_index}",
+        "",
+        *_section(
+            "Comments",
+            _table(["Section", "Severity", "Message", "Target state"], comment_rows)
+            if comment_rows
+            else "_(no comments)_",
+        ),
+    ]
+    return _wrap(_join(parts), bid_id=record.bid_id, phase="S9_DONE", artifact="review", title=f"Review round {round_index} — {record.reviewer}")
 
 
 # --- S10 Submission ---------------------------------------------------------
@@ -479,19 +359,15 @@ def render_review(record: ReviewRecord, *, round_index: int) -> str:
 
 def render_submission(sub: SubmissionRecord) -> str:
     check_rows = [[k, "✅" if v else "❌"] for k, v in sub.checklist.items()]
-    body = dedent(
-        f"""\
-        **Submitted at:** {sub.submitted_at.isoformat()}
-        **Channel:** {sub.channel}
-        **Confirmation ID:** {sub.confirmation_id or "_(pending)_"}
-        **Package checksum:** {sub.package_checksum or "_(none)_"}
-
-        ## Checklist
-
-        {_table(["Item", "Pass"], check_rows) if check_rows else "_(empty)_"}
-        """
-    )
-    return _wrap(body, bid_id=sub.bid_id, phase="S10_DONE", artifact="submission", title="Submission Record")
+    parts: list[str] = [
+        f"**Submitted at:** {sub.submitted_at.isoformat()}",
+        f"**Channel:** {sub.channel}",
+        f"**Confirmation ID:** {sub.confirmation_id or '_(pending)_'}",
+        f"**Package checksum:** {sub.package_checksum or '_(none)_'}",
+        "",
+        *_section("Checklist", _table(["Item", "Pass"], check_rows) if check_rows else "_(empty)_"),
+    ]
+    return _wrap(_join(parts), bid_id=sub.bid_id, phase="S10_DONE", artifact="submission", title="Submission Record")
 
 
 # --- S11 Retrospective ------------------------------------------------------
@@ -499,20 +375,16 @@ def render_submission(sub: SubmissionRecord) -> str:
 
 def render_retrospective(retro: RetrospectiveDraft) -> str:
     lesson_rows = [[l.title, l.category, l.detail] for l in retro.lessons]
-    body = dedent(
-        f"""\
-        **Outcome:** {retro.outcome}
-
-        ## Lessons ({len(retro.lessons)})
-
-        {_table(["Title", "Category", "Detail"], lesson_rows)}
-
-        ## KB updates queued
-
-        {_bullets(retro.kb_updates)}
-        """
-    )
-    return _wrap(body, bid_id=retro.bid_id, phase="S11_DONE", artifact="retrospective", title="Retrospective")
+    parts: list[str] = [
+        f"**Outcome:** {retro.outcome}",
+        "",
+        *_section(
+            f"Lessons ({len(retro.lessons)})",
+            _table(["Title", "Category", "Detail"], lesson_rows),
+        ),
+        *_section("KB updates queued", _bullets(retro.kb_updates)),
+    ]
+    return _wrap(_join(parts), bid_id=retro.bid_id, phase="S11_DONE", artifact="retrospective", title="Retrospective")
 
 
 # --- Index hub --------------------------------------------------------------
@@ -557,19 +429,17 @@ def render_index(state: BidState) -> str:
     if state.retrospective:
         links.append(link("11-retrospective", "11 Retrospective"))
 
-    body = dedent(
-        f"""\
-        **Client:** {title_client}
-        **Profile:** {profile}
-        **Deadline:** {deadline}
-        **Current state:** {state.current_state}
-
-        ## Artifacts
-
-        {chr(10).join(links) if links else "_(none yet)_"}
-        """
-    )
-    return _wrap(body, bid_id=state.bid_id, phase=state.current_state, artifact="index", title=f"Bid workspace — {title_client}")
+    parts: list[str] = [
+        f"**Client:** {title_client}",
+        f"**Profile:** {profile}",
+        f"**Deadline:** {deadline}",
+        f"**Current state:** {state.current_state}",
+        "",
+        "## Artifacts",
+        "",
+        "\n".join(links) if links else "_(none yet)_",
+    ]
+    return _wrap(_join(parts), bid_id=state.bid_id, phase=state.current_state, artifact="index", title=f"Bid workspace — {title_client}")
 
 
 __all__ = [

@@ -32,3 +32,8 @@ docker-compose.override.yml
 secrets/
 *.pem
 *.key
+
+# Per-bid workspace artifacts (Phase 2.7) — written by workspace_snapshot_activity.
+# The directory itself is kept (via .gitkeep) so the RW bind mount can attach on
+# first `docker compose up`; individual bid subfolders are ephemeral.
+src/kb-vault/bids/*/
