@@ -1,12 +1,14 @@
 # State Machine — AI Bidding Framework
 
-> **Implementation status (2026-04-17, Phase 2.1 delivered):**
+> **Implementation status (2026-04-17, Phase 2.2 delivered — deterministic-first):**
 > - **S0/S1/S2** are live with real heuristic logic in `activities/{intake,triage,scoping}.py`.
-> - **S3a/b/c + S4..S11** are live with deterministic stubs (`activities/stream_stubs.py` + `activities/{convergence,solution_design,wbs,commercial,assembly,review,submission,retrospective}.py`).
+> - **S3a/b/c** are live with real LangGraph agents (`agents/{ba,sa,domain}_agent.py` + `activities/{ba_analysis,sa_analysis,domain_mining}.py`). Each activity wrapper checks `get_claude_settings().api_key` at runtime — absent ⇒ fall back to the Phase 2.1 deterministic stub in `activities/stream_stubs.py`; present ⇒ run the real LangGraph graph.
+> - **S4 Convergence** applies three heuristic cross-stream rules (API-protocol mismatch / compliance-without-security-pattern / NFR-field-presence) and a weighted readiness score (`0.40·ba + 0.35·sa + 0.25·domain`, gate 0.80). `activities/convergence.py::build_convergence_report` is a pure function for easy unit testing.
+> - **S5..S11** remain deterministic stubs (Phase 2.1 shape preserved).
 > - Workflow terminal is `S11_DONE`; `S1_NO_BID` still fires on reject or 24h gate timeout.
 > - All state literals (`S0..S11_DONE` incl. `S1_NO_BID` / `S2_DONE`) live in `workflows/base.py::WorkflowState`; frontend mirror is `src/frontend/lib/utils/state-palette.ts`.
 > - The **feedback loops** (S9 reject → S8/S6/S5/S2, S6 over-budget → S5/S4, etc.) are documented below but **not yet wired** in the workflow — Phase 2.4 owns that.
-> - Real LLM agents for S3a/b/c + real conflict detection at S4 are Phase 2.2 (blocked on `ANTHROPIC_API_KEY`).
+> - Live-LLM integration test (`tests/test_workflow_integration.py`) is gated by `@pytest.mark.integration` + `ANTHROPIC_API_KEY`; pytest default `addopts = "-m 'not integration'"` skips it.
 > - See `docs/phases/PHASE_2_PLAN.md` for scope + delivery notes.
 
 ## Overview
@@ -75,35 +77,37 @@ Bid XL (> 2000 MD):    Full + S3d,S3e + multi-gate + C-level approval
 ## State Matrix
 
 ```
-┌──────┬─────────────────────┬──────────┬───────────┬──────────┬─────────────────┐
-│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Status (2.1)    │
-├──────┼─────────────────────┼──────────┼───────────┼──────────┼─────────────────┤
-│ S0   │ Intake              │ No       │ simple    │ full     │ REAL heuristic  │
-│ S1   │ Triage              │ No       │ quick     │ deep     │ REAL heuristic  │
-│ S2   │ Scoping             │ No       │ light     │ full     │ REAL heuristic  │
-│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ STUB*           │
-│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ STUB            │
-│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ STUB            │
-│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ — (Phase 3)     │
-│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ — (Phase 3)     │
-│ S4   │ Convergence         │ No       │ simple    │ full     │ STUB            │
-│ S5   │ Solution Design     │ No       │ light     │ full     │ STUB            │
-│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ STUB            │
-│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ STUB            │
-│ S8   │ Assembly            │ No       │ template  │ custom   │ STUB            │
-│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ STUB (auto-ok)  │
-│ S10  │ Submission          │ No       │ YES       │ YES      │ STUB            │
-│ S11  │ Retrospective       │ No       │ basic     │ deep     │ STUB            │
-└──────┴─────────────────────┴──────────┴───────────┴──────────┴─────────────────┘
+┌──────┬─────────────────────┬──────────┬───────────┬──────────┬──────────────────────┐
+│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Status (2.2)         │
+├──────┼─────────────────────┼──────────┼───────────┼──────────┼──────────────────────┤
+│ S0   │ Intake              │ No       │ simple    │ full     │ REAL heuristic       │
+│ S1   │ Triage              │ No       │ quick     │ deep     │ REAL heuristic       │
+│ S2   │ Scoping             │ No       │ light     │ full     │ REAL heuristic       │
+│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ REAL LLM / stub fb*  │
+│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ REAL LLM / stub fb*  │
+│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ REAL LLM / stub fb*  │
+│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ — (Phase 3)          │
+│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ — (Phase 3)          │
+│ S4   │ Convergence         │ No       │ simple    │ full     │ REAL heuristic       │
+│ S5   │ Solution Design     │ No       │ light     │ full     │ STUB                 │
+│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ STUB                 │
+│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ STUB                 │
+│ S8   │ Assembly            │ No       │ template  │ custom   │ STUB                 │
+│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ STUB (auto-ok)       │
+│ S10  │ Submission          │ No       │ YES       │ YES      │ STUB                 │
+│ S11  │ Retrospective       │ No       │ basic     │ deep     │ STUB                 │
+└──────┴─────────────────────┴──────────┴───────────┴──────────┴──────────────────────┘
 
 Legend:
-  REAL = deterministic heuristic, no LLM
-  STUB = Phase 2.1 deterministic placeholder (swapped to real LLM in 2.2 or later)
-  SKIP = not applicable for this bid profile (Phase 2.6 wires the conditional routing)
+  REAL        = deterministic heuristic, no LLM
+  REAL LLM    = Phase 2.2 LangGraph agent (Haiku classify/extract + Sonnet synth/critique)
+  STUB        = Phase 2.1 deterministic placeholder (swapped to real LLM in Phase 3 or later)
+  SKIP        = not applicable for this bid profile (Phase 2.6 wires the conditional routing)
 
-* S3a: the LangGraph BA agent (`agents/ba_agent.py` + `activities/ba_analysis.py`)
-  is fully implemented but sits dormant — `ba_analysis_stub_activity` runs in
-  its place until Phase 2.2 swaps the three stream activities.
+* S3a/b/c: each activity wrapper gates on `get_claude_settings().api_key`.
+  When the key is absent the wrapper delegates to `activities/stream_stubs.py::*_stub_activity`
+  (Phase 2.1 deterministic output). When the key is set it runs the real LangGraph
+  graph (`agents/{ba,sa,domain}_agent.py`). Zero-code-change cutover.
 ```
 
 ## Implementation Pointers
@@ -117,9 +121,12 @@ Legend:
 | S1 triage activity (+ stub scorer) | `src/ai-service/activities/triage.py` + `agents/triage_agent.py` |
 | S1 human gate (signal/query/timeout) | `bid_workflow.py` — `human_triage_decision` signal, `get_state` query, 24h wait |
 | S2 scoping activity | `src/ai-service/activities/scoping.py` |
-| S3a/b/c stream stubs | `src/ai-service/activities/stream_stubs.py` |
-| S3a real BA agent (dormant) | `src/ai-service/agents/ba_agent.py` + `activities/ba_analysis.py` |
-| S4 convergence stub | `src/ai-service/activities/convergence.py` |
+| S3a real BA agent | `src/ai-service/agents/ba_agent.py` + `activities/ba_analysis.py` |
+| S3b real SA agent | `src/ai-service/agents/sa_agent.py` + `activities/sa_analysis.py` |
+| S3c real Domain agent | `src/ai-service/agents/domain_agent.py` + `activities/domain_mining.py` |
+| S3a/b/c stub fallback (no-LLM path) | `src/ai-service/activities/stream_stubs.py` |
+| S3a/b/c prompts (versioned) | `src/ai-service/agents/prompts/{ba,sa,domain}_agent.py` |
+| S4 convergence (heuristic rules + readiness) | `src/ai-service/activities/convergence.py` — `build_convergence_report`, `_detect_api_mismatch`, `_detect_compliance_gap`, `_detect_nfr_field_mismatch` |
 | S5 HLD stub | `src/ai-service/activities/solution_design.py` |
 | S6 WBS stub | `src/ai-service/activities/wbs.py` |
 | S7 commercial stub | `src/ai-service/activities/commercial.py` |

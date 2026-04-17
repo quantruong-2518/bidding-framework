@@ -161,9 +161,9 @@ TOTAL Phase 1:                     ~$150-350/th
 
 ---
 
-## Phase 1 Implementation Map (2026-04-17)
+## Implementation Map (2026-04-17, Phase 2.2 delivered)
 
-Each architectural component now maps to concrete files and containers. For the per-task delivery manifest see `docs/phases/PHASE_1_PLAN.md` ("Phase 1 Delivered Summary").
+Each architectural component maps to concrete files and containers. For the per-task delivery manifest see `docs/phases/PHASE_1_PLAN.md` ("Phase 1 Delivered Summary") and `docs/phases/PHASE_2_PLAN.md` ("Task 2.1 DELIVERED", "Task 2.2 DELIVERED"). The Phase-2.2 deltas (real LangGraph agents for S3a/b/c, heuristic S4, stub-fallback gate, `StreamInput` unification) are reflected in the §AI Orchestration block below.
 
 ### Frontend — Next.js App Router (`src/frontend/`)
 - App Router routes: `app/{login,(authed)/dashboard,(authed)/bids,(authed)/bids/new,(authed)/bids/[id]}`
@@ -184,10 +184,12 @@ Each architectural component now maps to concrete files and containers. For the 
 - Workflow: `workflows/bid_workflow.py` (`@workflow.defn`), deterministic (`workflow.now()`, no host clock / uuid4 in body)
 - Human gate: `human_triage_decision` signal + 24h `wait_condition` timeout → terminal `S1_NO_BID`
 - Query: `get_state` returns `BidState` (Pydantic)
-- Activities (`activities/`): `intake.py` (S0), `triage.py` (S1, wraps `agents/triage_agent.py` stub scorer), `scoping.py` (S2), `ba_analysis.py` (S3a — built but not yet registered)
+- Activities (`activities/`): `intake.py` (S0), `triage.py` (S1, wraps `agents/triage_agent.py` stub scorer), `scoping.py` (S2), `ba_analysis.py` / `sa_analysis.py` / `domain_mining.py` (S3a/b/c — real LangGraph wrappers with per-activity stub-fallback gate), `convergence.py` (S4 — heuristic rules + weighted readiness), `solution_design.py` … `retrospective.py` (S5..S11 deterministic stubs)
 - HTTP surface: `workflows/router.py` — `POST /workflows/bid/start` (raw RFP), `POST /start-from-card` (pre-built BidCard), `POST /{id}/triage-signal`, `GET /{id}`
-- Worker: `worker.py` — task queue `bid-workflow-queue`, SIGTERM/SIGINT graceful shutdown
-- BA LangGraph agent (`agents/ba_agent.py`): 4-node graph, Haiku extract → Sonnet synthesise → Sonnet critique (loop cap 2); prompt caching via `cache_control: ephemeral` in `tools/claude_client.py`
+- Worker: `worker.py` — task queue `bid-workflow-queue`, SIGTERM/SIGINT graceful shutdown; registers 14 activities (3 S3 real agents + 10 stubs + 1 heuristic convergence; Phase 2.1 stream stubs stay importable for fallback but are not registered)
+- S3 LangGraph agents (`agents/{ba,sa,domain}_agent.py`): 4-node graphs (`retrieve → Haiku classify/extract/tag → Sonnet synth → Sonnet critique → loop cap 2`); prompt caching via `cache_control: ephemeral` in `tools/claude_client.py`; shared `StreamInput` DTO in `workflows/artifacts.py`
+- S3 fallback gate: each wrapper checks `get_claude_settings().api_key`; absent → delegates to the matching `activities/stream_stubs.py::*_stub_activity`; present → runs the real agent
+- S4 convergence (`activities/convergence.py`): three heuristic rules (`_detect_api_mismatch`, `_detect_compliance_gap`, `_detect_nfr_field_mismatch`) + readiness `0.40·ba + 0.35·sa + 0.25·domain`, gate 0.80; pure-function `build_convergence_report` for testability
 
 ### RAG — Qdrant hybrid (`src/ai-service/rag/` + `config/qdrant.py`)
 - Embeddings: `fastembed` default (bge-small-en-v1.5 dense + BM25 sparse); optional Voyage/Cohere
