@@ -188,6 +188,11 @@ services:
     container_name: bid-ai-worker
     restart: unless-stopped
     command: ["python", "worker.py"]
+    # ai-service Dockerfile bakes an HTTP healthcheck for port 8001 — worker.py
+    # does not listen. Disable the inherited probe; rely on `restart: unless-stopped`
+    # for liveness (worker crash → container exits → compose restarts it).
+    healthcheck:
+      disable: true
     depends_on:
       temporal:
         condition: service_healthy
