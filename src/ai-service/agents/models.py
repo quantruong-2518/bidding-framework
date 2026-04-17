@@ -1,0 +1,71 @@
+"""Pydantic DTOs for the BA LangGraph agent I/O (Task 1.3)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from workflows.models import RequirementAtom
+
+Priority = Literal["MUST", "SHOULD", "COULD", "WONT"]
+
+
+class BARequirements(BaseModel):
+    """Input to the BA agent — merged view of BidCard + ScopingResult."""
+
+    bid_id: UUID
+    client_name: str
+    industry: str
+    region: str
+    requirements: list[RequirementAtom] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    deadline: datetime
+
+
+class FunctionalRequirement(BaseModel):
+    """Single functional requirement line item synthesised by the BA agent."""
+
+    id: str
+    title: str
+    description: str
+    priority: Priority
+    rationale: str
+
+
+class RiskItem(BaseModel):
+    """Qualitative risk entry — likelihood/impact are free-form LOW/MEDIUM/HIGH."""
+
+    title: str
+    likelihood: str
+    impact: str
+    mitigation: str
+
+
+class SimilarProject(BaseModel):
+    """Pointer to a KB project surfaced by RAG during BA analysis."""
+
+    project_id: str
+    relevance_score: float
+    why_relevant: str
+
+
+class BusinessRequirementsDraft(BaseModel):
+    """Final structured output produced by the BA agent for downstream streams."""
+
+    bid_id: UUID
+    executive_summary: str
+    business_objectives: list[str] = Field(default_factory=list)
+    scope: dict[str, list[str]] = Field(
+        default_factory=lambda: {"in_scope": [], "out_of_scope": []}
+    )
+    functional_requirements: list[FunctionalRequirement] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    risks: list[RiskItem] = Field(default_factory=list)
+    similar_projects: list[SimilarProject] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    sources: list[str] = Field(default_factory=list)
