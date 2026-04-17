@@ -158,3 +158,71 @@ All other components (self-hosted)  ~$0
 ────────────────────────────────────────────
 TOTAL Phase 1:                     ~$150-350/th
 ```
+
+---
+
+## Phase 1 Implementation Map (2026-04-17)
+
+Each architectural component now maps to concrete files and containers. For the per-task delivery manifest see `docs/phases/PHASE_1_PLAN.md` ("Phase 1 Delivered Summary").
+
+### Frontend — Next.js App Router (`src/frontend/`)
+- App Router routes: `app/{login,(authed)/dashboard,(authed)/bids,(authed)/bids/new,(authed)/bids/[id]}`
+- ReactFlow DAG: `components/workflow/workflow-graph.tsx` (S0..S11 incl. S3a/b/c parallel row); `lib/utils/state-palette.ts` is the single source-of-truth for state labels/colors
+- Auth: zustand store `lib/auth/store.ts` + PKCE URL builder `lib/auth/keycloak-url.ts` (demo-mode + paste-JWT until realm provisioned)
+- Data layer: TanStack Query hooks `lib/hooks/use-bids.ts`; typed REST wrappers `lib/api/{client,bids,types}.ts`
+- Realtime: singleton `socket.io-client` `lib/ws/socket.ts` + per-bid subscription hook `lib/ws/use-bid-events.ts` (invalidates Query cache on `bid.event`)
+
+### API Gateway — NestJS (`src/api-gateway/`)
+- Auth: `src/auth/` — `JwtStrategy` (JWKS via `jwks-rsa`), `JwtAuthGuard` + `RolesGuard` registered as `APP_GUARD`, `@Public()` / `@Roles(...)` / `@CurrentUser()` decorators
+- Bids: `src/bids/` — DTOs (`class-validator`) + in-memory `Map` repo (Phase 2 → Postgres)
+- Workflow proxy: `src/workflows/` — `WorkflowsService` uses `@nestjs/axios` to talk to ai-service at `AI_SERVICE_URL`; trigger hits `/workflows/bid/start-from-card` (snake_case body)
+- WebSocket: `src/gateway/events.gateway.ts` — socket.io `/ws`, JWT handshake via `auth.token` or `Authorization` header
+- Redis: `src/redis/` — two `ioredis` clients (publisher + subscriber), `XADD` streams + `PUBLISH` fanout
+- Health: `GET /health` (public)
+
+### AI Orchestration — Temporal + LangGraph (`src/ai-service/`)
+- Workflow: `workflows/bid_workflow.py` (`@workflow.defn`), deterministic (`workflow.now()`, no host clock / uuid4 in body)
+- Human gate: `human_triage_decision` signal + 24h `wait_condition` timeout → terminal `S1_NO_BID`
+- Query: `get_state` returns `BidState` (Pydantic)
+- Activities (`activities/`): `intake.py` (S0), `triage.py` (S1, wraps `agents/triage_agent.py` stub scorer), `scoping.py` (S2), `ba_analysis.py` (S3a — built but not yet registered)
+- HTTP surface: `workflows/router.py` — `POST /workflows/bid/start` (raw RFP), `POST /start-from-card` (pre-built BidCard), `POST /{id}/triage-signal`, `GET /{id}`
+- Worker: `worker.py` — task queue `bid-workflow-queue`, SIGTERM/SIGINT graceful shutdown
+- BA LangGraph agent (`agents/ba_agent.py`): 4-node graph, Haiku extract → Sonnet synthesise → Sonnet critique (loop cap 2); prompt caching via `cache_control: ephemeral` in `tools/claude_client.py`
+
+### RAG — Qdrant hybrid (`src/ai-service/rag/` + `config/qdrant.py`)
+- Embeddings: `fastembed` default (bge-small-en-v1.5 dense + BM25 sparse); optional Voyage/Cohere
+- Collection: named vectors (`dense` cosine + `sparse`) via `AsyncQdrantClient`
+- Indexer: heading-aware chunker, UUID5 stable point IDs (idempotent re-ingest)
+- Retriever: server-side RRF fusion via `query_points` + `Prefetch`; Cohere `rerank-english-v3.0` when key present, else trim fallback
+- Seed: 9 sample docs under `rag/sample_docs/`; runnable `python -m rag.seed`
+
+### Knowledge base — Obsidian + ingestion (`src/kb-vault/` + `src/ai-service/ingestion/`)
+- Vault: 20 notes across `projects/`, `clients/`, `technologies/`, `templates/`, `lessons/` (81 `[[wiki-links]]`, 5 doc_types)
+- Parser: `ingestion/vault_parser.py` (frontmatter + headings + links + sha256 hash)
+- Watcher: `ingestion/watcher.py` (lazy `watchdog`, polling fallback, 500ms debounce)
+- Service: `ingestion/ingestion_service.py` (hash-cache short-circuit, calls `rag.indexer.index_markdown_file`)
+- Graph: `ingestion/graph_store.py` (in-memory `KnowledgeGraph` → JSON snapshot; swap-point for Neo4j/Kuzu in Phase 2)
+- CLI: `python -m ingestion [--vault X] [--watch]` (honours `KB_VAULT_PATH`)
+
+### Data layer (Phase 1 containers)
+- `postgres:16-alpine` — Temporal persistence + (future) bid persistence
+- `qdrant/qdrant:v1.12.4` — named-vector hybrid store
+- `redis:7-alpine` — streams + pub/sub
+- `temporalio/auto-setup:1.24.2` + `temporalio/ui:2.27.2`
+- `quay.io/keycloak/keycloak:24.0` (start-dev, realm bootstrap deferred)
+
+### Cross-service contracts
+| From → To | Contract |
+|---|---|
+| Frontend → API Gateway | REST + `Authorization: Bearer <keycloak-token>`; camelCase DTOs |
+| Frontend → API Gateway | socket.io `/ws` with `{auth:{token}}`; events `bid.event` (room `bid:{id}`) + `bid.broadcast` |
+| API Gateway → AI Service | HTTP to `AI_SERVICE_URL` (default `http://ai-service:8001`); snake_case payloads |
+| AI Service → Temporal | Task queue `bid-workflow-queue`, workflow id `bid-<uuid4>` |
+| AI Service → Qdrant | collection `bid_knowledge` with named vectors `dense` + `sparse` |
+| Ingestion → RAG | calls `rag.indexer.index_markdown_file` with frontmatter → metadata |
+
+### Observability + operations (Phase 1 baseline)
+- Python: stdlib `logging` per module; Temporal activity/workflow loggers
+- NestJS: `Logger` injected per service/controller — no `console.*`
+- Frontend: no telemetry yet (Phase 3.5 wires Langfuse + frontend events)
+- Healthchecks: 9/9 services; dependency graph enforces `condition: service_healthy`

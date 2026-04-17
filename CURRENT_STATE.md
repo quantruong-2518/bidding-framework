@@ -5,14 +5,33 @@
 
 ## Last Updated: 2026-04-17
 
-## Overall Status: PLANNING COMPLETE
+## Overall Status: PHASE 1 COMPLETE — ready for Phase 2
 
 ## >>> NEXT ACTION <<<
-**Task 1.1: Setup project structure + Docker Compose**
-- Init monorepo: Poetry (Python), npm (NestJS + Next.js)
-- Docker Compose: PostgreSQL, Qdrant, Redis, Temporal, Keycloak
-- See `docs/phases/PHASE_1_PLAN.md` Task 1.1 for details
-- Done when: `docker compose up` starts all services, health checks pass
+**Phase 2.1: Extend Temporal DAG to full 11 states (S3 parallel streams → S11 retrospective)**
+- Add activities `convergence.py` (S4), `solution_design.py` (S5), `wbs.py` (S6), `commercial.py` (S7), `assembly.py` (S8), `review.py` (S9), `submission.py` (S10), `retrospective.py` (S11)
+- Register `ba_analysis_activity` (built in 1.3) + new `sa_analysis_activity` + `domain_mining_activity` in `worker.py`; dispatch S3a/b/c in parallel via `workflow.execute_activity` + `asyncio.gather`
+- Extend `BidState` schema with `ba_draft`, `sa_draft`, `domain_notes`, `hld`, `wbs`, `pricing`, `proposal_package`, `reviews`
+- Add NestJS endpoints `/bids/:id/artifacts/:type` + corresponding frontend panels
+- See `docs/phases/PHASE_2_PLAN.md` for full scope
+
+### Live in Phase 1 (what a dev can run today)
+- `cd src && docker compose up --build -d` → 9 services healthy (~60–90s cold start)
+- Frontend at `http://localhost:3001` → Demo-mode login renders dashboard + ReactFlow DAG
+- Temporal UI at `http://localhost:8088`
+- ai-service direct API at `http://localhost:8001/docs` (Swagger)
+- Keycloak admin at `http://localhost:8080` (admin/admin) — realm `bidding` not yet provisioned (Phase 1.x), so authenticated flows need a pasted JWT or realm import
+
+### Documentation refreshed (2026-04-17)
+- `CURRENT_STATE.md` (this file) — Phase 1 complete, Next Action = Phase 2.1
+- `docs/phases/PHASE_1_PLAN.md` — each task has a "DELIVERED" block + Phase 1 Delivered Summary (waves, test counts, contracts, known gaps)
+- `docs/states/STATE_MACHINE.md` — state matrix annotated with Phase 1 impl status; implementation pointers table added
+- `docs/architecture/SYSTEM_ARCHITECTURE.md` — "Phase 1 Implementation Map" appended (layer → files/containers + cross-service contracts)
+- Sub-repo CLAUDE.md added for vibe coding with cwd inside any service:
+  - `src/ai-service/CLAUDE.md`
+  - `src/api-gateway/CLAUDE.md`
+  - `src/frontend/CLAUDE.md`
+  - `src/kb-vault/CLAUDE.md`
 
 ---
 
@@ -20,13 +39,13 @@
 
 | # | Task | Status | Notes |
 |---|---|---|---|
-| 1.1 | Setup project structure + Docker Compose | NOT STARTED | |
-| 1.2 | Temporal workflow: S0 (Intake) + S1 (Triage) + S2 (Scoping) | NOT STARTED | 3 states đầu tiên |
-| 1.3 | 1 LangGraph agent (BA Agent) as PoC | NOT STARTED | Chạy trong Temporal activity |
-| 1.4 | Basic RAG: Qdrant + embedding pipeline | NOT STARTED | |
-| 1.5 | Obsidian KB vault structure + ingestion service | NOT STARTED | Parse markdown → Qdrant |
-| 1.6 | NestJS API gateway + Keycloak auth | NOT STARTED | |
-| 1.7 | Minimal Next.js frontend (bid dashboard) | NOT STARTED | |
+| 1.1 | Setup project structure + Docker Compose | DONE | 9 services, healthchecks wired, `docker compose config` clean |
+| 1.2 | Temporal workflow: S0 + S1 + S2 | DONE | `bid_workflow.py` + intake/triage/scoping activities + FastAPI router + `/start-from-card` for UI-entered bids |
+| 1.3 | 1 LangGraph agent (BA Agent) PoC | DONE | 4-node graph (retrieve→Haiku extract→Sonnet synth→Sonnet critique), prompt caching, activity wrapper ready. NOT yet registered in `worker.py` — wired in Phase 2.2 |
+| 1.4 | Basic RAG: Qdrant + embedding pipeline | DONE | fastembed (bge-small 384d) + BM25 sparse → Qdrant RRF fusion + Cohere rerank fallback; 9 seed docs; idempotent UUID5 upserts |
+| 1.5 | Obsidian KB vault + ingestion service | DONE | 20 notes / 5 doc_types / 81+ links; `IngestionService` with watchdog+polling fallback, hash cache, graph snapshot |
+| 1.6 | NestJS API gateway + Keycloak auth | DONE | Bids CRUD + workflow proxy + WS gateway; JWKS-backed JWT guard + roles guard; realm provisioning deferred |
+| 1.7 | Minimal Next.js frontend | DONE | App Router, zustand + TanStack Query + ReactFlow + socket.io; demo-mode login; tsc/vitest/build/lint green |
 
 ## Phase 2: Full Pipeline (Weeks 5-8)
 
@@ -76,3 +95,11 @@
 - [ ] Data sovereignty requirements cụ thể?
 - [ ] Existing KB data ở đâu? Format gì?
 - [ ] Team size cho Phase 1 development?
+
+## Known Gaps Carried Into Phase 2
+
+- Keycloak realm `bidding` not yet provisioned — `docker-compose.yml` runs `start-dev` without `--import-realm`; add `bidding-realm.json` and `--import-realm` flag before wiring real auth end-to-end
+- `ba_analysis_activity` implemented but not registered in `worker.py` (by design — Phase 2.2 wires S3a/b/c in parallel)
+- Api-gateway Jest default `rootDir=src` only discovers `src/**/*.spec.ts`; run `npm run test:e2e` (or move specs under `src/`) to include `test/*.spec.ts`
+- Postgres persistence for bids uses an in-memory Map in `bids.service.ts` — swap for TypeORM/Prisma in Phase 2
+- CORS defaults to `*` when `CORS_ORIGIN` unset — tighten before any shared-environment deploy

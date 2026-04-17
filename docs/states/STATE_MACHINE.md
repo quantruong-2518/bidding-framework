@@ -1,5 +1,7 @@
 # State Machine — AI Bidding Framework
 
+> **Phase 1 implementation status (2026-04-17):** S0, S1 (with human gate), and S2 are live in `src/ai-service/workflows/bid_workflow.py` + `activities/{intake,triage,scoping}.py`. Terminal state `S1_NO_BID` fires on reject or 24h gate timeout. All state literals (S0..S11 incl. `S1_NO_BID` + `S2_DONE`) are defined in `workflows/models.py::WorkflowState` and mirrored in the frontend (`src/frontend/lib/utils/state-palette.ts`). S3..S11 are planned in Phase 2 — see `docs/phases/PHASE_2_PLAN.md`.
+
 ## Overview
 
 ```
@@ -66,27 +68,46 @@ Bid XL (> 2000 MD):    Full + S3d,S3e + multi-gate + C-level approval
 ## State Matrix
 
 ```
-┌──────┬─────────────────────┬──────────┬───────────┬──────────┐
-│State │ Name                │Parallel? │ Bid S     │ Bid XL   │
-├──────┼─────────────────────┼──────────┼───────────┼──────────┤
-│ S0   │ Intake              │ No       │ simple    │ full     │
-│ S1   │ Triage              │ No       │ quick     │ deep     │
-│ S2   │ Scoping             │ No       │ light     │ full     │
-│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │
-│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │
-│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │
-│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │
-│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │
-│ S4   │ Convergence         │ No       │ simple    │ full     │
-│ S5   │ Solution Design     │ No       │ light     │ full     │
-│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │
-│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │
-│ S8   │ Assembly            │ No       │ template  │ custom   │
-│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │
-│ S10  │ Submission          │ No       │ YES       │ YES      │
-│ S11  │ Retrospective       │ No       │ basic     │ deep     │
-└──────┴─────────────────────┴──────────┴───────────┴──────────┘
+┌──────┬─────────────────────┬──────────┬───────────┬──────────┬──────────┐
+│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Phase 1? │
+├──────┼─────────────────────┼──────────┼───────────┼──────────┼──────────┤
+│ S0   │ Intake              │ No       │ simple    │ full     │ DONE     │
+│ S1   │ Triage              │ No       │ quick     │ deep     │ DONE     │
+│ S2   │ Scoping             │ No       │ light     │ full     │ DONE     │
+│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ AGENT*   │
+│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ —        │
+│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ —        │
+│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ —        │
+│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ —        │
+│ S4   │ Convergence         │ No       │ simple    │ full     │ —        │
+│ S5   │ Solution Design     │ No       │ light     │ full     │ —        │
+│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ —        │
+│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ —        │
+│ S8   │ Assembly            │ No       │ template  │ custom   │ —        │
+│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ —        │
+│ S10  │ Submission          │ No       │ YES       │ YES      │ —        │
+│ S11  │ Retrospective       │ No       │ basic     │ deep     │ —        │
+└──────┴─────────────────────┴──────────┴───────────┴──────────┴──────────┘
+
+* S3a (Business Analysis): BA LangGraph agent built in Task 1.3
+  (`agents/ba_agent.py` + `activities/ba_analysis.py`) but NOT registered
+  in `worker.py` yet — Phase 2.2 wires the parallel S3a/b/c dispatch.
 ```
+
+## Phase 1 Implementation Pointers
+
+| Concern | File |
+|---|---|
+| Workflow orchestration | `src/ai-service/workflows/bid_workflow.py` |
+| State literals (`WorkflowState`) | `src/ai-service/workflows/models.py` |
+| S0 intake activity | `src/ai-service/activities/intake.py` |
+| S1 triage activity (+ stub scorer) | `src/ai-service/activities/triage.py` + `agents/triage_agent.py` |
+| S1 human gate (signal/query/timeout) | `bid_workflow.py` — `human_triage_decision` signal, `get_state` query, 24h wait |
+| S2 scoping activity | `src/ai-service/activities/scoping.py` |
+| Worker registration | `src/ai-service/worker.py` (task queue `bid-workflow-queue`) |
+| HTTP trigger surface | `src/ai-service/workflows/router.py` (`/start`, `/start-from-card`, `/{id}/triage-signal`, `/{id}`) |
+| Frontend state palette | `src/frontend/lib/utils/state-palette.ts` |
+| Frontend DAG | `src/frontend/components/workflow/workflow-graph.tsx` |
 
 ---
 
