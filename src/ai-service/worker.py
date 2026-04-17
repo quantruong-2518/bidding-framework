@@ -11,9 +11,22 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
+from activities.assembly import assembly_activity
+from activities.commercial import commercial_activity
+from activities.convergence import convergence_activity
 from activities.intake import intake_activity
+from activities.retrospective import retrospective_activity
+from activities.review import review_activity
 from activities.scoping import scoping_activity
+from activities.solution_design import solution_design_activity
+from activities.stream_stubs import (
+    ba_analysis_stub_activity,
+    domain_mining_stub_activity,
+    sa_analysis_stub_activity,
+)
+from activities.submission import submission_activity
 from activities.triage import triage_activity
+from activities.wbs import wbs_activity
 from config.temporal import get_settings
 from workflows.bid_workflow import BidWorkflow
 
@@ -45,7 +58,25 @@ async def _run() -> None:
         client,
         task_queue=settings.task_queue,
         workflows=[BidWorkflow],
-        activities=[intake_activity, triage_activity, scoping_activity],
+        activities=[
+            # S0..S2 (Phase 1)
+            intake_activity,
+            triage_activity,
+            scoping_activity,
+            # S3a/b/c deterministic stubs (Phase 2.1 — swap for real agents in 2.2)
+            ba_analysis_stub_activity,
+            sa_analysis_stub_activity,
+            domain_mining_stub_activity,
+            # S4..S11 stubs (Phase 2.1)
+            convergence_activity,
+            solution_design_activity,
+            wbs_activity,
+            commercial_activity,
+            assembly_activity,
+            review_activity,
+            submission_activity,
+            retrospective_activity,
+        ],
     )
 
     stop_event = asyncio.Event()

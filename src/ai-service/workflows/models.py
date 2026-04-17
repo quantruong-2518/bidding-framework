@@ -2,46 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-BidProfile = Literal["S", "M", "L", "XL"]
-"""Bid sizing used to pick a pipeline variant (see STATE_MACHINE.md)."""
-
-WorkflowState = Literal[
-    "S0",
-    "S1",
-    "S1_NO_BID",
-    "S2",
-    "S2_DONE",
-    "S3",
-    "S4",
-    "S5",
-    "S6",
-    "S7",
-    "S8",
-    "S9",
-    "S10",
-    "S11",
-]
-
-RequirementCategory = Literal[
-    "functional",
-    "nfr",
-    "technical",
-    "compliance",
-    "timeline",
-    "unclear",
-]
-
-TriageRecommendation = Literal["BID", "NO_BID"]
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from workflows.base import (  # re-exported below for backwards compatibility
+    BidProfile,
+    RequirementAtom,
+    RequirementCategory,
+    TriageRecommendation,
+    WorkflowState,
+    utcnow,
+)
 
 
 class IntakeInput(BaseModel):
@@ -66,7 +39,7 @@ class BidCard(BaseModel):
     technology_keywords: list[str] = Field(default_factory=list)
     estimated_profile: BidProfile
     requirements_raw: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class TriageDecision(BaseModel):
@@ -87,15 +60,6 @@ class HumanTriageSignal(BaseModel):
     bid_profile_override: BidProfile | None = None
 
 
-class RequirementAtom(BaseModel):
-    """A single decomposed requirement with its category + trace source."""
-
-    id: str
-    text: str
-    category: RequirementCategory
-    source_section: str | None = None
-
-
 class ScopingResult(BaseModel):
     """S2 output — decomposition, stream routing, and team sizing hint."""
 
@@ -104,8 +68,30 @@ class ScopingResult(BaseModel):
     team_suggestion: dict[str, int] = Field(default_factory=dict)
 
 
+# Artifact types are imported HERE, after the types they depend on are defined,
+# but BEFORE BidState so its annotations resolve without needing model_rebuild.
+# The import order is load-bearing — do not move it.
+from workflows.artifacts import (  # noqa: E402
+    BusinessRequirementsDraft,
+    ConvergenceReport,
+    DomainNotes,
+    HLDDraft,
+    PricingDraft,
+    ProposalPackage,
+    RetrospectiveDraft,
+    ReviewRecord,
+    SolutionArchitectureDraft,
+    SubmissionRecord,
+    WBSDraft,
+)
+
+
 class BidState(BaseModel):
-    """Snapshot returned by workflow queries and on completion."""
+    """Snapshot returned by workflow queries and on completion.
+
+    Phase 2.1 extends this with artifact fields for S3..S11. All new fields are
+    Optional (or empty list) so S0/S1/S2 queries remain backwards-compatible.
+    """
 
     bid_id: UUID
     current_state: WorkflowState
@@ -113,8 +99,19 @@ class BidState(BaseModel):
     triage: TriageDecision | None = None
     scoping: ScopingResult | None = None
     profile: BidProfile | None = None
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    ba_draft: BusinessRequirementsDraft | None = None
+    sa_draft: SolutionArchitectureDraft | None = None
+    domain_notes: DomainNotes | None = None
+    convergence: ConvergenceReport | None = None
+    hld: HLDDraft | None = None
+    wbs: WBSDraft | None = None
+    pricing: PricingDraft | None = None
+    proposal_package: ProposalPackage | None = None
+    reviews: list[ReviewRecord] = Field(default_factory=list)
+    submission: SubmissionRecord | None = None
+    retrospective: RetrospectiveDraft | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class BidWorkflowInput(BaseModel):
@@ -134,3 +131,20 @@ class StartWorkflowResponse(BaseModel):
     workflow_id: str
     run_id: str
     task_queue: str
+
+
+__all__ = [
+    "BidProfile",
+    "WorkflowState",
+    "RequirementCategory",
+    "RequirementAtom",
+    "TriageRecommendation",
+    "IntakeInput",
+    "BidCard",
+    "TriageDecision",
+    "HumanTriageSignal",
+    "ScopingResult",
+    "BidState",
+    "BidWorkflowInput",
+    "StartWorkflowResponse",
+]

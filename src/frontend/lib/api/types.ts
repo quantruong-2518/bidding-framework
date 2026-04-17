@@ -102,6 +102,210 @@ export interface Scoping {
   summary?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2.1 artifact shapes — snake_case to match the Python payload emitted
+// by the Temporal workflow (`src/ai-service/workflows/artifacts.py`). Fields
+// on each draft are a subset — expand as the UI starts rendering more.
+// ---------------------------------------------------------------------------
+
+export interface FunctionalRequirement {
+  id: string;
+  title: string;
+  description: string;
+  priority: 'MUST' | 'SHOULD' | 'COULD' | 'WONT';
+  rationale: string;
+}
+
+export interface RiskItem {
+  title: string;
+  likelihood: string;
+  impact: string;
+  mitigation: string;
+}
+
+export interface BusinessRequirementsDraft {
+  bid_id: string;
+  executive_summary: string;
+  business_objectives: string[];
+  scope: { in_scope: string[]; out_of_scope: string[] };
+  functional_requirements: FunctionalRequirement[];
+  assumptions: string[];
+  constraints: string[];
+  success_criteria: string[];
+  risks: RiskItem[];
+  confidence: number;
+  sources: string[];
+}
+
+export interface TechStackChoice {
+  layer: string;
+  choice: string;
+  rationale: string;
+}
+
+export interface ArchitecturePattern {
+  name: string;
+  description: string;
+  applies_to: string[];
+}
+
+export interface TechnicalRisk {
+  title: string;
+  likelihood: string;
+  impact: string;
+  mitigation: string;
+}
+
+export interface SolutionArchitectureDraft {
+  bid_id: string;
+  tech_stack: TechStackChoice[];
+  architecture_patterns: ArchitecturePattern[];
+  nfr_targets: Record<string, string>;
+  technical_risks: TechnicalRisk[];
+  integrations: string[];
+  confidence: number;
+  sources: string[];
+}
+
+export interface ComplianceItem {
+  framework: string;
+  requirement: string;
+  applies: boolean;
+  notes?: string;
+}
+
+export interface DomainPractice {
+  title: string;
+  description: string;
+}
+
+export interface DomainNotes {
+  bid_id: string;
+  industry: string;
+  compliance: ComplianceItem[];
+  best_practices: DomainPractice[];
+  industry_constraints: string[];
+  glossary: Record<string, string>;
+  confidence: number;
+  sources: string[];
+}
+
+export interface ConvergenceReport {
+  bid_id: string;
+  unified_summary: string;
+  readiness: Record<string, number>;
+  conflicts: Array<{
+    streams: string[];
+    topic: string;
+    description: string;
+    severity: 'LOW' | 'MEDIUM' | 'HIGH';
+    proposed_resolution: string;
+  }>;
+  open_questions: string[];
+}
+
+export interface HLDComponent {
+  name: string;
+  responsibility: string;
+  depends_on: string[];
+}
+
+export interface HLDDraft {
+  bid_id: string;
+  architecture_overview: string;
+  components: HLDComponent[];
+  data_flows: string[];
+  integration_points: string[];
+  security_approach: string;
+  deployment_model: string;
+}
+
+export interface WBSItem {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  effort_md: number;
+  owner_role?: string | null;
+  depends_on: string[];
+}
+
+export interface WBSDraft {
+  bid_id: string;
+  items: WBSItem[];
+  total_effort_md: number;
+  timeline_weeks: number;
+  critical_path: string[];
+}
+
+export interface PricingLine {
+  label: string;
+  amount: number;
+  unit: string;
+  notes?: string;
+}
+
+export interface PricingDraft {
+  bid_id: string;
+  model: 'fixed_price' | 'time_and_materials' | 'hybrid';
+  currency: string;
+  lines: PricingLine[];
+  subtotal: number;
+  margin_pct: number;
+  total: number;
+  scenarios: Record<string, number>;
+  notes: string;
+}
+
+export interface ProposalSection {
+  heading: string;
+  body_markdown: string;
+  sourced_from: string[];
+}
+
+export interface ProposalPackage {
+  bid_id: string;
+  title: string;
+  sections: ProposalSection[];
+  appendices: string[];
+  consistency_checks: Record<string, boolean>;
+}
+
+export interface ReviewRecord {
+  bid_id: string;
+  reviewer_role: string;
+  reviewer: string;
+  verdict: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED';
+  comments: Array<{
+    section: string;
+    severity: 'NIT' | 'MINOR' | 'MAJOR' | 'BLOCKER';
+    message: string;
+    target_state?: string | null;
+  }>;
+  reviewed_at: string;
+}
+
+export interface SubmissionRecord {
+  bid_id: string;
+  submitted_at: string;
+  channel: string;
+  confirmation_id: string | null;
+  package_checksum: string | null;
+  checklist: Record<string, boolean>;
+}
+
+export interface Lesson {
+  title: string;
+  category: 'win_pattern' | 'loss_pattern' | 'estimation' | 'process';
+  detail: string;
+}
+
+export interface RetrospectiveDraft {
+  bid_id: string;
+  outcome: 'WIN' | 'LOSS' | 'PENDING';
+  lessons: Lesson[];
+  kb_updates: string[];
+}
+
 export interface WorkflowTrigger {
   bid: Bid;
   workflow: {
@@ -120,6 +324,18 @@ export interface WorkflowStatus {
   triage?: Triage;
   scoping?: Scoping;
   profile?: BidProfile;
+  // Phase 2.1 artifacts — populated as the workflow walks the DAG.
+  ba_draft?: BusinessRequirementsDraft;
+  sa_draft?: SolutionArchitectureDraft;
+  domain_notes?: DomainNotes;
+  convergence?: ConvergenceReport;
+  hld?: HLDDraft;
+  wbs?: WBSDraft;
+  pricing?: PricingDraft;
+  proposal_package?: ProposalPackage;
+  reviews?: ReviewRecord[];
+  submission?: SubmissionRecord;
+  retrospective?: RetrospectiveDraft;
   [key: string]: unknown;
 }
 

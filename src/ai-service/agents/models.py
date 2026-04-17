@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from workflows.models import RequirementAtom
+from workflows.base import RequirementAtom
 
 Priority = Literal["MUST", "SHOULD", "COULD", "WONT"]
 

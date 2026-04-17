@@ -1,7 +1,18 @@
-"""Temporal workflow: S0 Intake -> S1 Triage (human gate) -> S2 Scoping."""
+"""Temporal workflow — full 11-state DAG (Phase 2.1: deterministic stubs).
+
+Order: S0 Intake -> S1 Triage (+ human gate) -> S2 Scoping ->
+       S3 parallel (S3a BA / S3b SA / S3c Domain) -> S4 Convergence ->
+       S5 Solution Design -> S6 WBS -> S7 Commercial -> S8 Assembly ->
+       S9 Review -> S10 Submission -> S11 Retrospective -> S11_DONE.
+
+S3a currently calls a deterministic stub (`ba_analysis_stub_activity`) rather
+than the real BA LangGraph agent — Phase 2.2 swaps the three stream stubs for
+real LLM-backed activities once ANTHROPIC_API_KEY is wired.
+"""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from uuid import UUID
 
@@ -11,9 +22,44 @@ from temporalio.common import RetryPolicy
 _NIL_UUID = UUID(int=0)
 
 with workflow.unsafe.imports_passed_through():
+    from activities.assembly import assembly_activity
+    from activities.commercial import commercial_activity
+    from activities.convergence import convergence_activity
     from activities.intake import intake_activity
+    from activities.retrospective import retrospective_activity
+    from activities.review import review_activity
     from activities.scoping import scoping_activity
+    from activities.solution_design import solution_design_activity
+    from activities.stream_stubs import (
+        ba_analysis_stub_activity,
+        domain_mining_stub_activity,
+        sa_analysis_stub_activity,
+    )
+    from activities.submission import submission_activity
     from activities.triage import triage_activity
+    from activities.wbs import wbs_activity
+    from workflows.artifacts import (
+        AssemblyInput,
+        BusinessRequirementsDraft,
+        CommercialInput,
+        ConvergenceInput,
+        ConvergenceReport,
+        DomainNotes,
+        HLDDraft,
+        PricingDraft,
+        ProposalPackage,
+        RetrospectiveDraft,
+        RetrospectiveInput,
+        ReviewInput,
+        ReviewRecord,
+        SolutionArchitectureDraft,
+        SolutionDesignInput,
+        StreamInput,
+        SubmissionInput,
+        SubmissionRecord,
+        WBSDraft,
+        WBSInput,
+    )
     from workflows.models import (
         BidCard,
         BidState,
@@ -37,7 +83,7 @@ _DEFAULT_RETRY = RetryPolicy(
 
 @workflow.defn(name="BidWorkflow")
 class BidWorkflow:
-    """S0 -> S1 (human gate) -> S2. Later waves extend from S2_DONE onward."""
+    """Durable orchestration for the full bid pipeline (S0..S11)."""
 
     def __init__(self) -> None:
         self._state: WorkflowState = "S0"
@@ -46,6 +92,17 @@ class BidWorkflow:
         self._scoping: ScopingResult | None = None
         self._profile: str | None = None
         self._signal: HumanTriageSignal | None = None
+        self._ba_draft: BusinessRequirementsDraft | None = None
+        self._sa_draft: SolutionArchitectureDraft | None = None
+        self._domain_notes: DomainNotes | None = None
+        self._convergence: ConvergenceReport | None = None
+        self._hld: HLDDraft | None = None
+        self._wbs: WBSDraft | None = None
+        self._pricing: PricingDraft | None = None
+        self._proposal_package: ProposalPackage | None = None
+        self._reviews: list[ReviewRecord] = []
+        self._submission: SubmissionRecord | None = None
+        self._retrospective: RetrospectiveDraft | None = None
 
     @workflow.signal(name="human_triage_decision")
     def human_triage_decision(self, signal: HumanTriageSignal) -> None:
@@ -64,16 +121,49 @@ class BidWorkflow:
             triage=self._triage,
             scoping=self._scoping,
             profile=self._profile,  # type: ignore[arg-type]
+            ba_draft=self._ba_draft,
+            sa_draft=self._sa_draft,
+            domain_notes=self._domain_notes,
+            convergence=self._convergence,
+            hld=self._hld,
+            wbs=self._wbs,
+            pricing=self._pricing,
+            proposal_package=self._proposal_package,
+            reviews=list(self._reviews),
+            submission=self._submission,
+            retrospective=self._retrospective,
             created_at=now,
             updated_at=now,
         )
 
     @workflow.run
     async def run(self, wf_input: BidWorkflowInput) -> BidState:
-        # --- S0 Intake ---------------------------------------------------
+        await self._run_s0(wf_input)
+        await self._run_s1_triage()
+
+        gate_ok = await self._wait_human_gate()
+        if not gate_ok:
+            return self._snapshot()
+
+        await self._run_s2_scoping()
+        await self._run_s3_streams()
+        await self._run_s4_convergence()
+        await self._run_s5_solution_design()
+        await self._run_s6_wbs()
+        await self._run_s7_commercial()
+        await self._run_s8_assembly()
+        await self._run_s9_review()
+        await self._run_s10_submission()
+        await self._run_s11_retrospective()
+
+        self._state = "S11_DONE"
+        return self._snapshot()
+
+    # --- S0 / S1 / S2 (Phase 1 logic — kept intact) --------------------------
+
+    async def _run_s0(self, wf_input: BidWorkflowInput) -> None:
         self._state = "S0"
         if wf_input.prebuilt_card is not None:
-            # Upstream already produced a BidCard (e.g., UI-entered structured fields) — skip RFP parsing.
             self._bid_card = wf_input.prebuilt_card
         elif wf_input.intake is not None:
             self._bid_card = await workflow.execute_activity(
@@ -88,7 +178,8 @@ class BidWorkflow:
                 non_retryable=True,
             )
 
-        # --- S1 Triage (AI score) ---------------------------------------
+    async def _run_s1_triage(self) -> None:
+        assert self._bid_card is not None
         self._state = "S1"
         self._triage = await workflow.execute_activity(
             triage_activity,
@@ -97,65 +188,235 @@ class BidWorkflow:
             retry_policy=_DEFAULT_RETRY,
         )
 
-        # --- S1 Gate (human signal) -------------------------------------
+    async def _wait_human_gate(self) -> bool:
+        """Wait for reviewer signal; return True only if approved."""
         try:
             await workflow.wait_condition(
                 lambda: self._signal is not None, timeout=HUMAN_GATE_TIMEOUT
             )
         except TimeoutError:
             self._state = "S1_NO_BID"
-            return self._finalize_no_bid(reason="human gate timeout")
+            workflow.logger.info("bid.no_bid reason=human gate timeout")
+            return False
 
         assert self._signal is not None
         if not self._signal.approved:
             self._state = "S1_NO_BID"
-            return self._finalize_no_bid(reason=self._signal.notes or "rejected by reviewer")
+            workflow.logger.info(
+                "bid.no_bid reason=%s", self._signal.notes or "rejected by reviewer"
+            )
+            return False
 
-        # Profile lock: reviewer may override AI's estimate.
+        assert self._bid_card is not None
         self._profile = (
             self._signal.bid_profile_override or self._bid_card.estimated_profile
         )
-        # Normalised card — keep original estimate but use agreed profile downstream.
-        scoping_card = self._bid_card.model_copy(
+        self._bid_card = self._bid_card.model_copy(
             update={"estimated_profile": self._profile}
         )
+        return True
 
-        # --- S2 Scoping -------------------------------------------------
+    async def _run_s2_scoping(self) -> None:
+        assert self._bid_card is not None
         self._state = "S2"
         self._scoping = await workflow.execute_activity(
             scoping_activity,
-            scoping_card,
+            self._bid_card,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+        self._state = "S2_DONE"
+
+    # --- S3 parallel streams -------------------------------------------------
+
+    async def _run_s3_streams(self) -> None:
+        assert self._bid_card is not None and self._scoping is not None
+        self._state = "S3"
+
+        stream_input = StreamInput(
+            bid_id=self._bid_card.bid_id,
+            client_name=self._bid_card.client_name,
+            industry=self._bid_card.industry,
+            region=self._bid_card.region,
+            requirements=self._scoping.requirement_map,
+            constraints=[],
+            deadline=self._bid_card.deadline,
+        )
+
+        ba_future = workflow.execute_activity(
+            ba_analysis_stub_activity,
+            stream_input,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+        sa_future = workflow.execute_activity(
+            sa_analysis_stub_activity,
+            stream_input,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+        dm_future = workflow.execute_activity(
+            domain_mining_stub_activity,
+            stream_input,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
         )
 
-        self._state = "S2_DONE"
+        self._ba_draft, self._sa_draft, self._domain_notes = await asyncio.gather(
+            ba_future, sa_future, dm_future
+        )
+
+    # --- S4..S11 sequential downstream --------------------------------------
+
+    async def _run_s4_convergence(self) -> None:
+        assert self._ba_draft and self._sa_draft and self._domain_notes and self._bid_card
+        self._state = "S4"
+        self._convergence = await workflow.execute_activity(
+            convergence_activity,
+            ConvergenceInput(
+                bid_id=self._bid_card.bid_id,
+                ba_draft=self._ba_draft,
+                sa_draft=self._sa_draft,
+                domain_notes=self._domain_notes,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s5_solution_design(self) -> None:
+        assert self._convergence and self._sa_draft and self._bid_card
+        self._state = "S5"
+        self._hld = await workflow.execute_activity(
+            solution_design_activity,
+            SolutionDesignInput(
+                bid_id=self._bid_card.bid_id,
+                convergence=self._convergence,
+                sa_draft=self._sa_draft,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s6_wbs(self) -> None:
+        assert self._hld and self._ba_draft and self._bid_card
+        self._state = "S6"
+        self._wbs = await workflow.execute_activity(
+            wbs_activity,
+            WBSInput(
+                bid_id=self._bid_card.bid_id,
+                hld=self._hld,
+                ba_draft=self._ba_draft,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s7_commercial(self) -> None:
+        assert self._wbs and self._bid_card
+        self._state = "S7"
+        self._pricing = await workflow.execute_activity(
+            commercial_activity,
+            CommercialInput(
+                bid_id=self._bid_card.bid_id,
+                wbs=self._wbs,
+                industry=self._bid_card.industry,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s8_assembly(self) -> None:
+        assert (
+            self._ba_draft
+            and self._sa_draft
+            and self._domain_notes
+            and self._hld
+            and self._wbs
+            and self._pricing
+            and self._bid_card
+        )
+        self._state = "S8"
+        self._proposal_package = await workflow.execute_activity(
+            assembly_activity,
+            AssemblyInput(
+                bid_id=self._bid_card.bid_id,
+                title=f"Proposal for {self._bid_card.client_name}",
+                ba_draft=self._ba_draft,
+                sa_draft=self._sa_draft,
+                domain_notes=self._domain_notes,
+                hld=self._hld,
+                wbs=self._wbs,
+                pricing=self._pricing,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s9_review(self) -> None:
+        assert self._proposal_package and self._bid_card
+        self._state = "S9"
+        record = await workflow.execute_activity(
+            review_activity,
+            ReviewInput(
+                bid_id=self._bid_card.bid_id,
+                package=self._proposal_package,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+        self._reviews.append(record)
+
+    async def _run_s10_submission(self) -> None:
+        assert self._proposal_package and self._bid_card
+        self._state = "S10"
+        self._submission = await workflow.execute_activity(
+            submission_activity,
+            SubmissionInput(
+                bid_id=self._bid_card.bid_id,
+                package=self._proposal_package,
+                reviews=list(self._reviews),
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    async def _run_s11_retrospective(self) -> None:
+        assert self._submission and self._bid_card
+        self._state = "S11"
+        self._retrospective = await workflow.execute_activity(
+            retrospective_activity,
+            RetrospectiveInput(
+                bid_id=self._bid_card.bid_id,
+                submission=self._submission,
+            ),
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=_DEFAULT_RETRY,
+        )
+
+    # --- helpers ------------------------------------------------------------
+
+    def _snapshot(self) -> BidState:
+        """Materialise the current snapshot (used by `run` return + NO_BID path)."""
+        bid_id = self._bid_card.bid_id if self._bid_card else _NIL_UUID
         now = workflow.now()
         return BidState(
-            bid_id=self._bid_card.bid_id,
+            bid_id=bid_id,
             current_state=self._state,
             bid_card=self._bid_card,
             triage=self._triage,
-            scoping=self._scoping,
-            profile=self._profile,  # type: ignore[arg-type]
+            scoping=self._scoping if self._state != "S1_NO_BID" else None,
+            profile=self._profile if self._state != "S1_NO_BID" else None,  # type: ignore[arg-type]
+            ba_draft=self._ba_draft,
+            sa_draft=self._sa_draft,
+            domain_notes=self._domain_notes,
+            convergence=self._convergence,
+            hld=self._hld,
+            wbs=self._wbs,
+            pricing=self._pricing,
+            proposal_package=self._proposal_package,
+            reviews=list(self._reviews),
+            submission=self._submission,
+            retrospective=self._retrospective,
             created_at=now,
             updated_at=now,
         )
-
-    def _finalize_no_bid(self, reason: str) -> BidState:
-        """Return the terminal NO_BID snapshot; reason is logged for audit."""
-        workflow.logger.info("bid.no_bid reason=%s", reason)
-        assert self._bid_card is not None
-        now = workflow.now()
-        return BidState(
-            bid_id=self._bid_card.bid_id,
-            current_state="S1_NO_BID",
-            bid_card=self._bid_card,
-            triage=self._triage,
-            scoping=None,
-            profile=None,
-            created_at=now,
-            updated_at=now,
-        )
-
-

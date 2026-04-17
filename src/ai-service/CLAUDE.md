@@ -8,6 +8,13 @@
 - Upstream: NestJS api-gateway calls us at `http://ai-service:8001/workflows/bid/*`.
 - Downstream: Qdrant (`qdrant:6333`), Temporal (`temporal:7233`), Redis (`redis:6379`), Postgres (`postgres:5432`), Anthropic API.
 
+## Delivery status (Phase 2.1)
+- Full 11-state DAG wired end-to-end: S0 Intake → S1 Triage (+human gate) → S2 Scoping → S3a/b/c parallel → S4..S11 → terminal `S11_DONE`.
+- S0/S1/S2 use real heuristics (Phase 1); S3..S11 use deterministic stubs (Phase 2.1) so the pipeline ships without `ANTHROPIC_API_KEY`.
+- `ba_analysis_activity` (the real BA LangGraph agent) IS implemented but intentionally NOT registered in `worker.py`. `ba_analysis_stub_activity` runs in its place. Phase 2.2 swaps stub → real when `ANTHROPIC_API_KEY` is set.
+- `sa_agent.py` / `domain_agent.py` are not yet built — they arrive in Phase 2.2.
+- Feedback loops (S9 reject → S8/S6/S5/S2 etc.) are not yet wired — review stub auto-approves, Phase 2.4 owns the real gate.
+
 ## Quick commands
 ```bash
 # Install
@@ -35,7 +42,7 @@ poetry run python -m rag.seed
 poetry run python -m ingestion --vault ../kb-vault --watch
 ```
 
-## File tour (Phase 1)
+## File tour (Phase 2.1)
 ```
 ai-service/
   main.py                    # FastAPI app + /health; mounts workflows/router.py
@@ -50,21 +57,42 @@ ai-service/
     ingestion.py             # IngestionSettings (env prefix KB_)
 
   workflows/
-    models.py                # All Pydantic DTOs (BidCard, BidState, TriageDecision, …)
-                             # WorkflowState literal = single source of truth for state names
-    bid_workflow.py          # BidWorkflow @workflow.defn (S0 → S1 gate → S2)
+    base.py                  # Shared primitives — RequirementAtom, BidProfile, WorkflowState, utcnow
+                             # Sits at the bottom of the dep graph so models + artifacts + agents
+                             # can all import it without a circular.
+    models.py                # S0-S2 DTOs + BidState (extended w/ 11 Phase 2.1 artifact fields).
+                             # Re-exports WorkflowState, RequirementAtom, BidProfile from base.
+    artifacts.py             # Phase 2.1 artifact DTOs: SolutionArchitectureDraft, DomainNotes,
+                             # ConvergenceReport, HLDDraft, WBSDraft, PricingDraft, ProposalPackage,
+                             # ReviewRecord, SubmissionRecord, RetrospectiveDraft + activity
+                             # input types (StreamInput, ConvergenceInput, AssemblyInput, …).
+    bid_workflow.py          # BidWorkflow @workflow.defn — full 11-state DAG (S0 → S11_DONE).
+                             # _run_s3_streams dispatches S3a/b/c in parallel via asyncio.gather.
     router.py                # FastAPI: /start, /start-from-card, /{id}/triage-signal, /{id}
 
   activities/
     intake.py                # S0: parse raw RFP → BidCard
     triage.py                # S1: calls agents/triage_agent.py::score
     scoping.py               # S2: requirement decomposition + stream assignment
-    ba_analysis.py           # S3a: wraps agents/ba_agent.py (NOT yet registered in worker.py)
+    stream_stubs.py          # S3a/b/c deterministic stubs (Phase 2.1). Each derives its output
+                             # from the scoping atoms. Phase 2.2 replaces all three with real LLM
+                             # activities.
+    ba_analysis.py           # S3a: wraps agents/ba_agent.py (BUILT but NOT registered in
+                             # worker.py — ba_analysis_stub_activity runs instead).
+    convergence.py           # S4 stub — merges stream outputs, emits readiness scores.
+    solution_design.py       # S5 stub — HLD skeleton from SA draft + convergence report.
+    wbs.py                   # S6 stub — default WBS template, effort biased by BA MUSTs.
+    commercial.py            # S7 stub — fixed-price advisory model (blended day rate).
+    assembly.py              # S8 stub — compiles BA/SA/Domain/HLD/WBS/Pricing into sections.
+    review.py                # S9 stub — auto-approves (consistency_checks always pass on stub
+                             # packages). Phase 2.4 replaces with real human signal + loop-back.
+    submission.py            # S10 stub — cutover checklist + SHA-256 package checksum.
+    retrospective.py         # S11 stub — default lessons + KB update queue placeholder.
 
   agents/
     triage_agent.py          # Stub deterministic scorer (swap-point for LLM)
     ba_agent.py              # LangGraph 4-node: retrieve → extract(Haiku) → synth(Sonnet) → critique(Sonnet)
-    models.py                # BARequirements, BusinessRequirementsDraft, etc.
+    models.py                # BARequirements + BA-agent I/O types (import RequirementAtom from workflows.base)
     prompts/ba_agent.py      # Versioned system prompts for BA graph
 
   tools/
@@ -108,9 +136,13 @@ ai-service/
 ## Known gotchas
 - Temporal `auto-setup` takes ~60–90s cold start; worker should retry Temporal connection.
 - `temporalio`, `langgraph`, `qdrant-client`, `anthropic` are NOT installed on the dev host; tests that import them will fail on bare `pytest`. Run via Docker or `poetry install` first.
-- `ba_analysis_activity` exists but is NOT yet registered in `worker.py` — by design, Phase 2.2 wires S3a/b/c in parallel.
+- `ba_analysis_activity` (real LangGraph BA agent) is implemented but NOT registered in `worker.py`. The worker runs `ba_analysis_stub_activity` instead. Phase 2.2 swaps the three S3 stream stubs for real agents once `ANTHROPIC_API_KEY` is set.
 - Workflow determinism: do NOT construct `BidCard(client_name=…)` inside the workflow body — the `default_factory=uuid4` / `datetime.utcnow` on pydantic fields breaks Temporal replay. Use `workflow.now()` + explicit values.
 - fastembed ONNX is sync — wrap in `anyio.to_thread.run_sync` (already done in `rag/embeddings.py`).
+- **Import cycle trap:** `workflows/models.py` does a late `from workflows.artifacts import ...` at the bottom so `BidState`'s artifact fields resolve. That works because `artifacts.py` imports only from `workflows.base` (and `agents.models`), not from `workflows.models`. If you add a type to `models.py` that `artifacts.py` needs, put it in `workflows/base.py` instead.
+- **Docker image split:** `ai-service` and `ai-worker` use SEPARATE image tags (`bid-framework-ai-service` vs `bid-framework-ai-worker`) even though they share the Dockerfile. After editing workflow/activity code, rebuild BOTH images and force-recreate the worker container, otherwise the live worker keeps running stale bytecode silently (no error, workflow just stops at an old terminal state).
+- **S3 parallel activities** are dispatched via `asyncio.gather(workflow.execute_activity(...), ...)`. If one stream errors permanently, `gather` cancels the others and the workflow fails. `return_exceptions=True` would let partial success through — add only when Phase 2.2 has real agents that sometimes degrade.
+- **Review stub auto-approves** regardless of consistency. The workflow does not loop back on `CHANGES_REQUESTED` / `REJECTED` yet — STATE_MACHINE.md §Feedback Loops is Phase 2.4 work. Do not seed any real source of non-APPROVED verdicts before that lands.
 
 ## Pointers
 - Root rules: `../../CLAUDE.md`

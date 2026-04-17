@@ -53,3 +53,18 @@ export function getWorkflowStatus(id: string): Promise<WorkflowStatus> {
     `/bids/${encodeURIComponent(id)}/workflow/status`,
   );
 }
+
+/**
+ * Fetch a single named artifact from the workflow state. Use this when a panel
+ * needs fresh data without pulling the full `WorkflowStatus` envelope. The
+ * type values match the Python `BidState` keys — see
+ * `src/api-gateway/src/workflows/workflows.controller.ts::ARTIFACT_KEYS`.
+ */
+export function getWorkflowArtifact<T>(
+  id: string,
+  type: string,
+): Promise<T> {
+  return apiFetch<T>(
+    `/bids/${encodeURIComponent(id)}/workflow/artifacts/${encodeURIComponent(type)}`,
+  );
+}

@@ -163,6 +163,7 @@ function inferSelected(state: WorkflowState | null): NodeKind | null {
   if (state === 'S1_NO_BID') return 'S1';
   if (state === 'S2_DONE') return 'S2';
   if (state === 'S3') return 'S3a';
+  if (state === 'S11_DONE') return 'S11';
   return state as NodeKind;
 }
 

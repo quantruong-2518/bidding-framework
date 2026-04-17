@@ -8,6 +8,12 @@
 - Upstream: user browser.
 - Downstream: NestJS api-gateway REST (`NEXT_PUBLIC_API_URL`) + socket.io (`NEXT_PUBLIC_WS_URL` → `/ws`) + Keycloak (`NEXT_PUBLIC_KEYCLOAK_URL`, PKCE — stubbed in Phase 1).
 
+## Delivery status (Phase 2.1)
+- Workflow graph now covers the full S0→S11_DONE path, with S3a/b/c rendered as a parallel sibling row and a terminal short-circuit when `current_state === 'S11_DONE'` (every node marks `done`).
+- `state-detail.tsx` side pane renders a bespoke panel per artifact: Bid Card / Triage / Scoping / BA Draft / SA Draft / Domain Notes / Convergence / HLD / WBS / Pricing / Proposal Package / Reviews / Submission / Retrospective. Each panel reads from `WorkflowStatus` (a single `GET /bids/:id/workflow/status` poll feeds all of them).
+- `lib/api/types.ts` mirrors Python's artifact shapes (snake_case) to match the payload emitted by `src/ai-service/workflows/artifacts.py`. When Python adds a field, update the interface here first — that keeps the UI type-safe before the panel renders it.
+- `lib/api/bids.ts::getWorkflowArtifact<T>(id, type)` hits the NestJS endpoint `GET /bids/:id/workflow/artifacts/:type` (14 allowed keys — see `ARTIFACT_KEYS` on the NestJS controller). Reserved for future lazy-load panels; no callers yet in Phase 2.1.
+
 ## Quick commands
 ```bash
 # Install
@@ -105,9 +111,10 @@ frontend/
 
 ## Contract with NestJS
 - REST: all non-`/health` calls require `Authorization: Bearer <token>` — injected by `lib/api/client.ts`.
-- Payloads are **camelCase** (NestJS DTO convention). The gateway transforms to snake_case when proxying to ai-service.
+- Payloads are **camelCase** on the outbound NestJS DTO layer. But artifact payloads returned by `/workflow/status` + `/workflow/artifacts/:type` are **snake_case** — NestJS forwards the ai-service body verbatim. The interfaces in `lib/api/types.ts` reflect that (`ba_draft`, `sa_draft`, etc.).
 - WebSocket: `/ws` namespace, auth via `{auth:{token}}`. Emit `subscribe`/`unsubscribe` with bidId. Listen for `bid.event` + `bid.broadcast`.
-- Workflow state literals must match Python: `S0, S1, S1_NO_BID, S2, S2_DONE, S3..S11`. `state-palette.ts` is the single source — update there when new states ship.
+- Workflow state literals must match Python: `S0, S1, S1_NO_BID, S2, S2_DONE, S3, S4..S11, S11_DONE`. `state-palette.ts` is the single source — update there + in `workflow-graph.tsx::mainOrderForCompare` when a new state ships.
+- Artifact keys accepted by `/workflow/artifacts/:type`: `bid_card, triage, scoping, ba_draft, sa_draft, domain_notes, convergence, hld, wbs, pricing, proposal_package, reviews, submission, retrospective` (14 total). See `ARTIFACT_KEYS` on the NestJS controller for the source of truth.
 
 ## Known gotchas
 - Demo-mode token (`demo-token` injected by login page) will be rejected by NestJS `JwtAuthGuard` since the Keycloak realm isn't provisioned yet. UI renders correctly; live data fetches 401 until the realm lands.
@@ -115,6 +122,8 @@ frontend/
 - `NEXT_PUBLIC_WS_URL` can be `http://…` — socket.io-client upgrades to WebSocket automatically. Match the NestJS origin.
 - Build uses `output: 'standalone'` for Docker — keep `public/` existing (can be empty).
 - Dark mode is driven by `.dark` on `<html>`; no toggle yet.
+- Pre-existing triage shape mismatch: `types.ts::Triage` uses `recommend: 'bid' | 'no-bid'` + `confidence`, but Python emits `recommendation: 'BID' | 'NO_BID'` + `overall_score`. The UI reads `triage.recommend` so it displays "pending" for real payloads. Phase 2.4 revisit — fix the interface to match Python, or add a NestJS-side transform.
+- `workflow-graph.tsx::mainOrderForCompare` MUST include every terminal literal (`S2_DONE`, `S11_DONE`, `S1_NO_BID`) the workflow can settle on, otherwise `currentIdx = -1` and every node renders as `pending`. Add new terminals there when they ship.
 
 ## Pointers
 - Root rules: `../../CLAUDE.md`

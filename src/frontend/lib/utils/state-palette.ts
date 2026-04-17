@@ -18,7 +18,8 @@ export type WorkflowState =
   | 'S8'
   | 'S9'
   | 'S10'
-  | 'S11';
+  | 'S11'
+  | 'S11_DONE';
 
 export type NodeKind =
   | 'S0'
@@ -134,6 +135,12 @@ export const STATE_PALETTE: Record<WorkflowState, StateMeta> = {
     state: 'S11',
     label: 'Retrospective',
     description: 'Capture lessons learned back into the Knowledge Base.',
+    tone: 'done',
+  },
+  S11_DONE: {
+    state: 'S11_DONE',
+    label: 'Retrospective Complete',
+    description: 'Pipeline complete; retrospective filed back to KB.',
     tone: 'done',
   },
 };

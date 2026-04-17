@@ -45,4 +45,16 @@ describe('WorkflowGraph', () => {
     const node = screen.getByTestId('wf-node-S2');
     expect(node.className).toMatch(/animate-pulse-ring|border-primary/);
   });
+
+  it('marks every node as done when pipeline reaches S11_DONE', () => {
+    render(<WorkflowGraph currentState="S11_DONE" />);
+    [
+      'S0','S1','S2','S3a','S3b','S3c','S4','S5','S6','S7','S8','S9','S10','S11',
+    ].forEach((id) => {
+      const node = screen.getByTestId(`wf-node-${id}`);
+      // `done` tone = border-success. Critical: must NOT be stuck on `pending`.
+      expect(node.className).toMatch(/border-success/);
+      expect(node.className).not.toMatch(/bg-muted text-muted-foreground border-border/);
+    });
+  });
 });

@@ -1,6 +1,13 @@
 # State Machine — AI Bidding Framework
 
-> **Phase 1 implementation status (2026-04-17):** S0, S1 (with human gate), and S2 are live in `src/ai-service/workflows/bid_workflow.py` + `activities/{intake,triage,scoping}.py`. Terminal state `S1_NO_BID` fires on reject or 24h gate timeout. All state literals (S0..S11 incl. `S1_NO_BID` + `S2_DONE`) are defined in `workflows/models.py::WorkflowState` and mirrored in the frontend (`src/frontend/lib/utils/state-palette.ts`). S3..S11 are planned in Phase 2 — see `docs/phases/PHASE_2_PLAN.md`.
+> **Implementation status (2026-04-17, Phase 2.1 delivered):**
+> - **S0/S1/S2** are live with real heuristic logic in `activities/{intake,triage,scoping}.py`.
+> - **S3a/b/c + S4..S11** are live with deterministic stubs (`activities/stream_stubs.py` + `activities/{convergence,solution_design,wbs,commercial,assembly,review,submission,retrospective}.py`).
+> - Workflow terminal is `S11_DONE`; `S1_NO_BID` still fires on reject or 24h gate timeout.
+> - All state literals (`S0..S11_DONE` incl. `S1_NO_BID` / `S2_DONE`) live in `workflows/base.py::WorkflowState`; frontend mirror is `src/frontend/lib/utils/state-palette.ts`.
+> - The **feedback loops** (S9 reject → S8/S6/S5/S2, S6 over-budget → S5/S4, etc.) are documented below but **not yet wired** in the workflow — Phase 2.4 owns that.
+> - Real LLM agents for S3a/b/c + real conflict detection at S4 are Phase 2.2 (blocked on `ANTHROPIC_API_KEY`).
+> - See `docs/phases/PHASE_2_PLAN.md` for scope + delivery notes.
 
 ## Overview
 
@@ -68,46 +75,64 @@ Bid XL (> 2000 MD):    Full + S3d,S3e + multi-gate + C-level approval
 ## State Matrix
 
 ```
-┌──────┬─────────────────────┬──────────┬───────────┬──────────┬──────────┐
-│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Phase 1? │
-├──────┼─────────────────────┼──────────┼───────────┼──────────┼──────────┤
-│ S0   │ Intake              │ No       │ simple    │ full     │ DONE     │
-│ S1   │ Triage              │ No       │ quick     │ deep     │ DONE     │
-│ S2   │ Scoping             │ No       │ light     │ full     │ DONE     │
-│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ AGENT*   │
-│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ —        │
-│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ —        │
-│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ —        │
-│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ —        │
-│ S4   │ Convergence         │ No       │ simple    │ full     │ —        │
-│ S5   │ Solution Design     │ No       │ light     │ full     │ —        │
-│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ —        │
-│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ —        │
-│ S8   │ Assembly            │ No       │ template  │ custom   │ —        │
-│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ —        │
-│ S10  │ Submission          │ No       │ YES       │ YES      │ —        │
-│ S11  │ Retrospective       │ No       │ basic     │ deep     │ —        │
-└──────┴─────────────────────┴──────────┴───────────┴──────────┴──────────┘
+┌──────┬─────────────────────┬──────────┬───────────┬──────────┬─────────────────┐
+│State │ Name                │Parallel? │ Bid S     │ Bid XL   │ Status (2.1)    │
+├──────┼─────────────────────┼──────────┼───────────┼──────────┼─────────────────┤
+│ S0   │ Intake              │ No       │ simple    │ full     │ REAL heuristic  │
+│ S1   │ Triage              │ No       │ quick     │ deep     │ REAL heuristic  │
+│ S2   │ Scoping             │ No       │ light     │ full     │ REAL heuristic  │
+│ S3a  │ Business Analysis   │ YES      │ YES       │ YES      │ STUB*           │
+│ S3b  │ Technical Analysis  │ YES      │ YES       │ YES      │ STUB            │
+│ S3c  │ Domain Mining       │ YES      │ SKIP      │ YES      │ STUB            │
+│ S3d  │ Competitive Intel   │ YES      │ SKIP      │ YES      │ — (Phase 3)     │
+│ S3e  │ Resource & Capacity │ YES      │ SKIP      │ YES      │ — (Phase 3)     │
+│ S4   │ Convergence         │ No       │ simple    │ full     │ STUB            │
+│ S5   │ Solution Design     │ No       │ light     │ full     │ STUB            │
+│ S6   │ WBS + Estimation    │ No       │ YES       │ YES      │ STUB            │
+│ S7   │ Commercial Strategy │ No       │ SKIP      │ YES      │ STUB            │
+│ S8   │ Assembly            │ No       │ template  │ custom   │ STUB            │
+│ S9   │ Review Gate         │ No       │ 1 reviewer│ multi    │ STUB (auto-ok)  │
+│ S10  │ Submission          │ No       │ YES       │ YES      │ STUB            │
+│ S11  │ Retrospective       │ No       │ basic     │ deep     │ STUB            │
+└──────┴─────────────────────┴──────────┴───────────┴──────────┴─────────────────┘
 
-* S3a (Business Analysis): BA LangGraph agent built in Task 1.3
-  (`agents/ba_agent.py` + `activities/ba_analysis.py`) but NOT registered
-  in `worker.py` yet — Phase 2.2 wires the parallel S3a/b/c dispatch.
+Legend:
+  REAL = deterministic heuristic, no LLM
+  STUB = Phase 2.1 deterministic placeholder (swapped to real LLM in 2.2 or later)
+  SKIP = not applicable for this bid profile (Phase 2.6 wires the conditional routing)
+
+* S3a: the LangGraph BA agent (`agents/ba_agent.py` + `activities/ba_analysis.py`)
+  is fully implemented but sits dormant — `ba_analysis_stub_activity` runs in
+  its place until Phase 2.2 swaps the three stream activities.
 ```
 
-## Phase 1 Implementation Pointers
+## Implementation Pointers
 
 | Concern | File |
 |---|---|
-| Workflow orchestration | `src/ai-service/workflows/bid_workflow.py` |
-| State literals (`WorkflowState`) | `src/ai-service/workflows/models.py` |
+| Workflow orchestration (S0 → S11_DONE) | `src/ai-service/workflows/bid_workflow.py` |
+| State literals (`WorkflowState`) | `src/ai-service/workflows/base.py` (re-exported by `workflows/models.py`) |
+| S3..S11 artifact DTOs | `src/ai-service/workflows/artifacts.py` |
 | S0 intake activity | `src/ai-service/activities/intake.py` |
 | S1 triage activity (+ stub scorer) | `src/ai-service/activities/triage.py` + `agents/triage_agent.py` |
 | S1 human gate (signal/query/timeout) | `bid_workflow.py` — `human_triage_decision` signal, `get_state` query, 24h wait |
 | S2 scoping activity | `src/ai-service/activities/scoping.py` |
+| S3a/b/c stream stubs | `src/ai-service/activities/stream_stubs.py` |
+| S3a real BA agent (dormant) | `src/ai-service/agents/ba_agent.py` + `activities/ba_analysis.py` |
+| S4 convergence stub | `src/ai-service/activities/convergence.py` |
+| S5 HLD stub | `src/ai-service/activities/solution_design.py` |
+| S6 WBS stub | `src/ai-service/activities/wbs.py` |
+| S7 commercial stub | `src/ai-service/activities/commercial.py` |
+| S8 assembly stub | `src/ai-service/activities/assembly.py` |
+| S9 review stub | `src/ai-service/activities/review.py` |
+| S10 submission stub | `src/ai-service/activities/submission.py` |
+| S11 retrospective stub | `src/ai-service/activities/retrospective.py` |
 | Worker registration | `src/ai-service/worker.py` (task queue `bid-workflow-queue`) |
-| HTTP trigger surface | `src/ai-service/workflows/router.py` (`/start`, `/start-from-card`, `/{id}/triage-signal`, `/{id}`) |
+| HTTP trigger surface (ai-service) | `src/ai-service/workflows/router.py` (`/start`, `/start-from-card`, `/{id}/triage-signal`, `/{id}`) |
+| NestJS artifact endpoint | `src/api-gateway/src/workflows/workflows.controller.ts` (`GET /bids/:id/workflow/artifacts/:type`) |
 | Frontend state palette | `src/frontend/lib/utils/state-palette.ts` |
 | Frontend DAG | `src/frontend/components/workflow/workflow-graph.tsx` |
+| Frontend artifact panels | `src/frontend/components/workflow/state-detail.tsx` |
 
 ---
 

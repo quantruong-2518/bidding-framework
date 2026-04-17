@@ -119,10 +119,22 @@ function computeStatuses(
     'S9',
     'S10',
     'S11',
+    'S11_DONE',
   ];
 
   const currentIdx = mainOrderForCompare.indexOf(current);
   const isS2Complete = currentIdx >= mainOrderForCompare.indexOf('S2_DONE');
+  const isPipelineComplete = current === 'S11_DONE';
+
+  // Pipeline terminal: every node is done — short-circuit before the index
+  // comparison (which would otherwise mis-classify everything as "pending"
+  // because S11_DONE sits past the last node in `order`).
+  if (isPipelineComplete) {
+    order.forEach((k) => {
+      statuses[k] = 'done';
+    });
+    return statuses;
+  }
 
   order.forEach((kind) => {
     const mapped = nodeKindToState(kind);

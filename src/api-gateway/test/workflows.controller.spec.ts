@@ -112,4 +112,39 @@ describe('WorkflowsController', () => {
     );
     expect(status.state).toBe('S1');
   });
+
+  it('GET artifacts/:type returns the named artifact', async () => {
+    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    const statusPayload = {
+      workflow_id: 'wf-42',
+      status: 'COMPLETED',
+      current_state: 'S11_DONE',
+      wbs: { bid_id: baseBid.id, items: [], total_effort_md: 205, timeline_weeks: 10, critical_path: [] },
+    };
+    http.get.mockReturnValue(of(okResponse(statusPayload)));
+    const artifact = (await controller.artifact(baseBid.id, 'wbs')) as {
+      total_effort_md: number;
+    };
+    expect(artifact.total_effort_md).toBe(205);
+  });
+
+  it('GET artifacts/:type rejects unknown keys with 400', async () => {
+    await expect(controller.artifact(baseBid.id, 'nope')).rejects.toThrow(
+      /Unknown artifact type 'nope'/,
+    );
+  });
+
+  it('GET artifacts/:type returns 404 when artifact is null (not yet produced)', async () => {
+    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    const statusPayload = {
+      workflow_id: 'wf-42',
+      status: 'RUNNING',
+      current_state: 'S2_DONE',
+      wbs: null,
+    };
+    http.get.mockReturnValue(of(okResponse(statusPayload)));
+    await expect(controller.artifact(baseBid.id, 'wbs')).rejects.toThrow(
+      /has not been produced yet/,
+    );
+  });
 });

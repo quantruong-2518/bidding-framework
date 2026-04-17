@@ -86,6 +86,26 @@ export class WorkflowsService {
     return this.request<WorkflowStatusResponse>('GET', url);
   }
 
+  /**
+   * Return the named artifact field from the current workflow state snapshot.
+   * The authoritative list of keys is defined in `ARTIFACT_KEYS` on the controller.
+   */
+  async getArtifact(bidId: string, key: string): Promise<unknown> {
+    const status = await this.getStatus(bidId);
+    if (!Object.prototype.hasOwnProperty.call(status, key)) {
+      throw new NotFoundException(
+        `Artifact '${key}' is not present on bid ${bidId}.`,
+      );
+    }
+    const value = (status as Record<string, unknown>)[key];
+    if (value === null || value === undefined) {
+      throw new NotFoundException(
+        `Artifact '${key}' has not been produced yet for bid ${bidId}.`,
+      );
+    }
+    return value;
+  }
+
   private requireWorkflowId(bidId: string): string {
     const bid = this.bidsService.findOne(bidId);
     if (!bid.workflowId) {

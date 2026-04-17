@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -12,6 +13,38 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { WorkflowsService } from './workflows.service';
 import { TriageSignalDto } from './triage-signal.dto';
+
+/**
+ * Artifact keys exposed by Python `BidState`. Keep in sync with
+ * `src/ai-service/workflows/models.py::BidState` and
+ * `src/ai-service/workflows/artifacts.py`.
+ */
+export const ARTIFACT_KEYS = [
+  'bid_card',
+  'triage',
+  'scoping',
+  'ba_draft',
+  'sa_draft',
+  'domain_notes',
+  'convergence',
+  'hld',
+  'wbs',
+  'pricing',
+  'proposal_package',
+  'reviews',
+  'submission',
+  'retrospective',
+] as const;
+
+export type ArtifactKey = (typeof ARTIFACT_KEYS)[number];
+
+function assertArtifactKey(value: string): asserts value is ArtifactKey {
+  if (!(ARTIFACT_KEYS as readonly string[]).includes(value)) {
+    throw new BadRequestException(
+      `Unknown artifact type '${value}'. Allowed: ${ARTIFACT_KEYS.join(', ')}.`,
+    );
+  }
+}
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('bids/:id/workflow')
@@ -36,5 +69,14 @@ export class WorkflowsController {
   @Get('status')
   status(@Param('id', new ParseUUIDPipe()) id: string): Promise<unknown> {
     return this.workflowsService.getStatus(id);
+  }
+
+  @Get('artifacts/:type')
+  async artifact(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('type') type: string,
+  ): Promise<unknown> {
+    assertArtifactKey(type);
+    return this.workflowsService.getArtifact(id, type);
   }
 }
