@@ -13,6 +13,30 @@ export const dynamic = 'force-dynamic';
 type CallbackStatus = 'pending' | 'error';
 
 /**
+ * Next 14 requires `useSearchParams()` callers to be wrapped in a Suspense
+ * boundary; otherwise `next build` aborts static generation of the page.
+ * The outer export wraps the real implementation so build stays green.
+ */
+export default function AuthCallbackPage(): React.ReactElement {
+  return (
+    <React.Suspense fallback={<AuthCallbackFallback />}>
+      <AuthCallbackInner />
+    </React.Suspense>
+  );
+}
+
+function AuthCallbackFallback(): React.ReactElement {
+  return (
+    <main className="flex min-h-screen items-center justify-center">
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading…
+      </div>
+    </main>
+  );
+}
+
+/**
  * Phase 3.2a — OIDC authorization-code callback.
  *
  * Reads `?code` + `?state` from the URL, pulls the stashed PKCE verifier
@@ -20,14 +44,21 @@ type CallbackStatus = 'pending' | 'error';
  * success stores the token pair in {@link useAuthStore} and redirects to
  * the `returnTo` path (or `/dashboard` by default).
  */
-export default function AuthCallbackPage(): React.ReactElement {
+function AuthCallbackInner(): React.ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [status, setStatus] = React.useState<CallbackStatus>('pending');
   const [error, setError] = React.useState<string | null>(null);
+  // `consumePkceState` wipes sessionStorage on first call — one-shot. Guard
+  // against the effect re-running (React 18 strict-mode double-invoke, or
+  // an upstream re-render that changes router/searchParams identity).
+  const startedRef = React.useRef(false);
 
   React.useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+
     const code = searchParams?.get('code') ?? null;
     const state = searchParams?.get('state') ?? null;
     const oauthError = searchParams?.get('error');

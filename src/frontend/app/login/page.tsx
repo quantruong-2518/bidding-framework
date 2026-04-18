@@ -18,6 +18,27 @@ import type { AuthUser } from '@/lib/api/types';
 export const dynamic = 'force-dynamic';
 
 /**
+ * Next 14 requires `useSearchParams()` callers to be wrapped in Suspense;
+ * the outer export keeps `next build` happy, the inner component does the
+ * actual work.
+ */
+export default function LoginPage(): React.ReactElement {
+  return (
+    <React.Suspense fallback={<LoginFallback />}>
+      <LoginInner />
+    </React.Suspense>
+  );
+}
+
+function LoginFallback(): React.ReactElement {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-muted/20 p-6">
+      <Loader2 className="h-4 w-4 animate-spin" />
+    </main>
+  );
+}
+
+/**
  * Phase 3.2a — Keycloak-first login.
  *
  * Primary path: "Sign in with Keycloak" → PKCE flow to `/auth/callback`.
@@ -25,7 +46,7 @@ export const dynamic = 'force-dynamic';
  * no signature validation). The UI never exposes the dev path to a real
  * user — it only fires when the query param is present.
  */
-export default function LoginPage(): React.ReactElement {
+function LoginInner(): React.ReactElement {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);

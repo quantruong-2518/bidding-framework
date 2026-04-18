@@ -2,7 +2,8 @@
 
 import * as React from 'react';
 import { ExternalLink } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button';
+import { cn } from '@/lib/utils/cn';
 import { getBidTraceUrl } from '@/lib/api/bids';
 import { useAuthStore } from '@/lib/auth/store';
 
@@ -44,18 +45,22 @@ export function LangfuseLinkButton({ bidId }: LangfuseLinkButtonProps): React.Re
 
   if (!hasRole || loading || !url) return null;
 
+  // The project's Button wraps a native `<button>` and does not support
+  // `asChild`. Apply the same class names to an anchor so keyboard +
+  // screen-reader affordances stay consistent with other outline buttons.
   return (
-    <Button
-      asChild
-      variant="outline"
-      size="sm"
-      className="gap-1.5 text-xs"
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
       aria-label="Open Langfuse trace"
+      className={cn(
+        buttonVariants({ variant: 'outline', size: 'sm' }),
+        'gap-1.5 text-xs',
+      )}
     >
-      <a href={url} target="_blank" rel="noopener noreferrer">
-        <ExternalLink className="h-3.5 w-3.5" />
-        Langfuse trace
-      </a>
-    </Button>
+      <ExternalLink className="h-3.5 w-3.5" />
+      Langfuse trace
+    </a>
   );
 }

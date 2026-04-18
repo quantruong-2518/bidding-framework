@@ -50,6 +50,14 @@ _DEFAULT_BID_ID = UUID("11111111-1111-1111-1111-111111111111")
 _GENERATED_AT = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
 
 
+# `BidProfile` is `Literal["S", "M", "L", "XL"]` — no enum attribute access.
+# These constants make fixture call sites read like `_bid_card(PROFILE_M)`.
+PROFILE_S: BidProfile = "S"
+PROFILE_M: BidProfile = "M"
+PROFILE_L: BidProfile = "L"
+PROFILE_XL: BidProfile = "XL"
+
+
 def _bid_card(profile: BidProfile, client_name: str = "Acme Bank") -> BidCard:
     return BidCard(
         bid_id=_DEFAULT_BID_ID,
@@ -251,7 +259,7 @@ def full_bid_m(*, bid_id: UUID | None = None) -> AssemblyInput:
         hld=_hld(),
         wbs=_wbs(),
         pricing=_pricing(),
-        bid_card=_bid_card(BidProfile.M),
+        bid_card=_bid_card(PROFILE_M),
         triage=_triage(),
         scoping=_scoping(),
         convergence=_convergence(),
@@ -271,7 +279,7 @@ def minimal_bid_s(*, bid_id: UUID | None = None) -> AssemblyInput:
         hld=None,
         wbs=_wbs(total_effort_md=40.0),
         pricing=None,
-        bid_card=_bid_card(BidProfile.S),
+        bid_card=_bid_card(PROFILE_S),
         triage=_triage(),
         scoping=_scoping(),
         convergence=_convergence(),
@@ -299,7 +307,7 @@ def edge_bid(*, bid_id: UUID | None = None) -> AssemblyInput:
             margin_pct=0.0,
             total=0.0,
         ),
-        bid_card=_bid_card(BidProfile.L),
+        bid_card=_bid_card(PROFILE_L),
         triage=_triage(),
         scoping=_scoping(),
         convergence=_convergence(),

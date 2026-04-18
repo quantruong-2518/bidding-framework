@@ -9,13 +9,18 @@ import {
 } from '@/lib/auth/keycloak-url';
 
 const routerReplace = vi.fn();
+const routerPush = vi.fn();
+// Stable router + searchParams identities so the callback page's useEffect
+// doesn't re-run just because `useRouter()` returns a fresh object each call.
+const ROUTER = { replace: routerReplace, push: routerPush };
 const searchParamsStore: { get: (k: string) => string | null } = {
   get: () => null,
 };
+const SEARCH_PARAMS = { get: (k: string) => searchParamsStore.get(k) };
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
-  useSearchParams: () => ({ get: (k: string) => searchParamsStore.get(k) }),
+  useRouter: () => ROUTER,
+  useSearchParams: () => SEARCH_PARAMS,
 }));
 
 const exchangeMock = vi.fn();

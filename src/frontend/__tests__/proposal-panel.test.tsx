@@ -50,16 +50,24 @@ describe('ProposalPanel (rendered via StateDetail)', () => {
   });
 
   it('renders every section with a collapsible summary + markdown body', () => {
-    render(<StateDetail selected="S8" status={buildStatus()} />);
+    const { container } = render(
+      <StateDetail selected="S8" status={buildStatus()} />,
+    );
     expect(screen.getByText('Proposal for Acme Bank')).toBeInTheDocument();
 
     const sections = screen.getAllByTestId('proposal-section');
     expect(sections).toHaveLength(3);
 
-    // Summaries always visible.
-    expect(screen.getByText('Cover Page')).toBeInTheDocument();
-    expect(screen.getByText('Executive Summary')).toBeInTheDocument();
-    expect(screen.getByText('Terms + Appendix')).toBeInTheDocument();
+    // Query <summary> elements specifically — the markdown body also renders
+    // the heading as an <h1>, so a plain getByText(heading) is ambiguous.
+    const summaries = Array.from(container.querySelectorAll('summary')).map((el) =>
+      el.textContent?.trim(),
+    );
+    expect(summaries).toEqual([
+      'Cover Page',
+      'Executive Summary',
+      'Terms + Appendix',
+    ]);
   });
 
   it('expands the first section by default and collapses the rest', () => {
