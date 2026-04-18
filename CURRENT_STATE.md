@@ -79,12 +79,22 @@
 | `NEXT_PUBLIC_KEYCLOAK_REALM` | `bidding` | frontend | realm path segment |
 | `NEXT_PUBLIC_KEYCLOAK_CLIENT_ID` | `bidding-frontend` | frontend | public PKCE client id |
 
-**Tests at delivery (expected, NOT executed — Docker + Poetry unavailable on this host):**
-- api-gateway: **+7 tests** (all in new `test/auth/jwt.strategy.spec.ts`). Pre-existing 19 → **26 target**.
-- frontend: **+15 tests** (5 pkce + 6 keycloak-url + 4 auth-callback). Pre-existing 47 → **62 target**.
-- ai-service: unchanged.
+**Tests at delivery — ACTUALLY RAN (after `fix(phase-3.2a-stability)` commit):**
+- ai-service: **125 passed**, 1 integration deselected (pytest via local venv).
+- api-gateway: **29 passed** across 5 suites (includes the new `test/auth/jwt.strategy.spec.ts`).
+- frontend: **65 passed** across 12 suites; `tsc --noEmit` clean; `next build` succeeds.
 - `docker compose config` parses clean with the new `./keycloak` mount + `--import-realm` flag.
 - `jq . bidding-realm.json` validates.
+
+**Real bugs caught + fixed during the run** (would have blocked live smoke):
+1. `BidProfile.M` in Phase 3.1 fixtures — `BidProfile` is a `Literal`, not an Enum → replaced with string constants `PROFILE_S/M/L/XL` (19 pytest failures → green).
+2. `<Button asChild>` in the Phase 3.5 `LangfuseLinkButton` — project's Button stub does not support Radix Slot → replaced with a plain `<a>` + `buttonVariants` classes (tsc error).
+3. `next build` aborted on `/login` + `/auth/callback` — `useSearchParams` must be wrapped in `<Suspense>` → split each page into outer Suspense boundary + inner implementation.
+4. Callback page re-invoked the effect on any router/searchParams identity change (or React 18 strict-mode double-invoke) and hit an already-consumed PKCE session → added `useRef` guard so the side-effect body runs exactly once.
+5. Auth-callback test used unstable `useRouter()` / `useSearchParams()` mocks → stable `ROUTER` + `SEARCH_PARAMS` constants.
+6. Proposal-panel test used ambiguous `getByText('Cover Page')` — markdown body also renders it as `<h1>` → scoped lookup to `<summary>` elements.
+
+Also: installed `react-markdown` into the frontend lockfile, added a Node webcrypto polyfill in `vitest.setup.ts` for jsdom environments that hide `globalThis.crypto`.
 
 **Deferred smoke (Phase D in plan) — CARRY-FORWARD to Conv-8b:**
 1. `cp src/.env.example src/.env` + set `ANTHROPIC_API_KEY=sk-ant-...`.
