@@ -9,7 +9,7 @@ deterministic stub matching the same shape.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -295,6 +295,14 @@ class CommercialInput(BaseModel):
 
 
 class AssemblyInput(BaseModel):
+    """S8 activity input.
+
+    Phase 3.1 widened the payload so Jinja templates get the full bid context
+    (client_name on cover, triage rationale in exec summary, scoping in BR,
+    etc.). Every new field is optional so the stub-fallback path keeps working
+    on old callers.
+    """
+
     bid_id: UUID
     title: str
     ba_draft: BusinessRequirementsDraft
@@ -303,6 +311,17 @@ class AssemblyInput(BaseModel):
     hld: HLDDraft | None = None
     wbs: WBSDraft
     pricing: PricingDraft | None = None
+    # Phase 3.1 additions — feed richer Jinja context without changing any
+    # downstream DTOs. `generated_at` is set by the workflow via `workflow.now()`
+    # to stay Temporal-deterministic. `bid_card` / `triage` / `scoping` are
+    # typed `Any` to avoid the `workflows.models` → `artifacts.py` import cycle
+    # (they're consumed only by Jinja templates which introspect at runtime).
+    bid_card: Any = None
+    triage: Any = None
+    scoping: Any = None
+    convergence: ConvergenceReport | None = None
+    reviews: list[ReviewRecord] = Field(default_factory=list)
+    generated_at: datetime | None = None
 
 
 class ReviewInput(BaseModel):

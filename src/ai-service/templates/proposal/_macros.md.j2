@@ -1,0 +1,35 @@
+{#-
+ # Shared Jinja macros used across all proposal sections.
+ # Keep macros pure — no side effects, no I/O. Currency + date helpers are
+ # also exposed as filters in assembly/renderer.py::_build_env.
+-#}
+
+{% macro section_header(title) -%}
+# {{ title }}
+{%- endmacro %}
+
+{% macro subheader(title) -%}
+## {{ title }}
+{%- endmacro %}
+
+{% macro bullet_list(items, empty='*None.*') -%}
+{% if items %}
+{% for item in items %}
+- {{ item }}
+{% endfor %}
+{% else %}
+{{ empty }}
+{% endif %}
+{%- endmacro %}
+
+{% macro section_or_na(body, na_hint='Not applicable for this bid.') -%}
+{% if body and body.strip() %}
+{{ body }}
+{% else %}
+*{{ na_hint }}*
+{% endif %}
+{%- endmacro %}
+
+{% macro kv_line(label, value, missing='TBD') -%}
+- **{{ label }}**: {% if value is not none and value != '' %}{{ value }}{% else %}{{ missing }}{% endif %}
+{%- endmacro %}

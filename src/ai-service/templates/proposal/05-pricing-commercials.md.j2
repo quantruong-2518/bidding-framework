@@ -1,0 +1,36 @@
+{%- from '_macros.md.j2' import section_header, subheader -%}
+{{ section_header('Pricing + Commercials') }}
+
+{% if pricing %}
+{% if pricing.lines %}
+**Model:** {{ pricing.model }} &nbsp;•&nbsp; **Currency:** {{ pricing.currency }}
+
+{{ subheader('Line items') }}
+
+| Line | Amount ({{ pricing.currency }}) |
+| --- | ---: |
+{% for line in pricing.lines %}
+| {{ line.label }} | {{ '%.2f' | format(line.amount) }} |
+{% endfor %}
+
+{{ subheader('Totals') }}
+- **Subtotal**: {{ '%.2f' | format(pricing.subtotal) }} {{ pricing.currency }}
+- **Margin**: {{ '%.1f' | format(pricing.margin_pct) }}%
+- **Total**: {{ '%.2f' | format(pricing.total) }} {{ pricing.currency }}
+
+{% if pricing.scenarios %}
+{{ subheader('Scenarios') }}
+{% for name, amount in pricing.scenarios.items() %}
+- **{{ name }}**: {{ '%.2f' | format(amount) }} {{ pricing.currency }}
+{% endfor %}
+{% endif %}
+
+{% if pricing.notes %}
+_{{ pricing.notes }}_
+{% endif %}
+{% else %}
+*Not applicable — pricing framework to be agreed at contract signature.*
+{% endif %}
+{% else %}
+*Not applicable for this bid — commercial terms will be negotiated post-award.*
+{% endif %}

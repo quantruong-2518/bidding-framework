@@ -1,0 +1,39 @@
+{%- from '_macros.md.j2' import section_header, subheader -%}
+{{ section_header('Terms + Appendix') }}
+
+{{ subheader('Compliance coverage') }}
+{% if domain.compliance %}
+{% for item in domain.compliance %}
+- **{{ item.framework }}** — {{ item.requirement }}{% if not item.applies %} _(not applicable)_{% endif %}
+{% endfor %}
+{% else %}
+*No compliance frameworks identified for this industry.*
+{% endif %}
+
+{{ subheader('Industry constraints') }}
+{% if domain.industry_constraints %}
+{% for c in domain.industry_constraints %}
+- {{ c }}
+{% endfor %}
+{% else %}
+*None flagged.*
+{% endif %}
+
+{{ subheader('Glossary') }}
+{% if domain.glossary %}
+{% for term, definition in domain.glossary.items() %}
+- **{{ term }}** — {{ definition }}
+{% endfor %}
+{% else %}
+*None.*
+{% endif %}
+
+{% if reviews %}
+{{ subheader('Reviews on file') }}
+{% for r in reviews %}
+- {{ r.reviewed_at | date }} — **{{ r.reviewer }}** ({{ r.reviewer_role }}): {{ r.verdict }}
+{% endfor %}
+{% endif %}
+
+{{ subheader('Validity') }}
+This proposal is valid for 30 days from {{ today | date }}.

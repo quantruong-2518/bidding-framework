@@ -7,9 +7,11 @@ from uuid import uuid4
 
 import pytest
 
+from activities.assembly import assembly_activity
 from activities.intake import intake_activity
 from activities.scoping import scoping_activity
 from activities.triage import triage_activity
+from tests.fixtures.bid_states import full_bid_m, minimal_bid_s
 from workflows.models import BidCard, IntakeInput
 
 
@@ -134,6 +136,50 @@ async def test_scoping_activity_decomposition() -> None:
     # Team suggestion lookup honors profile.
     assert result.team_suggestion["ba"] >= 2
     assert all(a.id.startswith("REQ-") for a in ids.values())
+
+
+@pytest.mark.asyncio
+async def test_assembly_activity_uses_real_templates_on_full_bid() -> None:
+    """Phase 3.1: assembly activity renders all 7 sections via Jinja."""
+    payload = full_bid_m()
+    pkg = await assembly_activity(payload)
+    headings = [s.heading for s in pkg.sections]
+    assert headings == [
+        "Cover Page",
+        "Executive Summary",
+        "Business Requirements",
+        "Technical Approach",
+        "WBS + Estimation",
+        "Pricing + Commercials",
+        "Terms + Appendix",
+    ]
+    assert pkg.consistency_checks["rendered_all_sections"] is True
+    assert pkg.consistency_checks.get("template_error") is not True
+
+
+@pytest.mark.asyncio
+async def test_assembly_activity_falls_back_on_template_error(monkeypatch) -> None:
+    """When render_package raises RendererError the activity emits the stub shape."""
+    from activities import assembly as assembly_module
+    from assembly.renderer import RendererError
+
+    def _boom(_payload) -> None:
+        raise RendererError("template library corrupt")
+
+    monkeypatch.setattr(assembly_module, "render_package", _boom)
+    pkg = await assembly_activity(full_bid_m())
+    # Stub has the legacy 5 sections, not 7.
+    assert len(pkg.sections) == 5
+    assert pkg.consistency_checks.get("template_error") is True
+    assert pkg.consistency_checks.get("rendered_all_sections") is False
+
+
+@pytest.mark.asyncio
+async def test_assembly_activity_handles_bid_s_null_pricing_and_hld() -> None:
+    pkg = await assembly_activity(minimal_bid_s())
+    assert len(pkg.sections) == 7
+    pricing = next(s for s in pkg.sections if s.heading == "Pricing + Commercials")
+    assert "Not applicable" in pricing.body_markdown
 
 
 @pytest.mark.asyncio

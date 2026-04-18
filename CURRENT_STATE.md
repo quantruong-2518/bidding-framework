@@ -3,12 +3,12 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 3.5 delivery — Conv-6 solo)
+## Last Updated: 2026-04-18 (Phase 3.1 delivery — Conv-7 solo)
 
-## Overall Status: PHASE 3.5 COMPLETE — next = Phase 3.1 (Jinja2 proposal templates, Conv-7)
+## Overall Status: PHASE 3.5 + 3.1 COMPLETE — next = Phase 3.2a (Keycloak realm + live-LLM smoke, Conv-8 PAIR)
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-7 = Phase 3.1 Jinja templates.** Plan in `memory/project_phase_3_1_detailed_plan.md`. No survey / design work needed.
+**Next conversation = Conv-8 = Phase 3.2a Keycloak.** Plan in `memory/project_phase_3_2a_detailed_plan.md`. Requires real Keycloak auth — paired task (needs external realm JSON + live ANTHROPIC_API_KEY to close Phase 2.2/2.5/3.1/3.5 smoke carry-forward).
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
@@ -32,6 +32,98 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.1 Delivery Summary (2026-04-18, Conv-7 solo)
+**Scope:** replace the hand-written stub sections in `activities/assembly.py` with Jinja2-rendered proposal output. 7 sections per `ProposalPackage`; per-section null-guards (Bid-S skips HLD + pricing → "Not applicable"); `RendererError` triggers stub-fallback so a bid never fails on templating. Frontend `ProposalPanel` now renders full markdown via `react-markdown` with per-section `<details>` accordion. No LLM — $0.
+
+**New files (ai-service):**
+- `assembly/__init__.py` — package exports.
+- `assembly/renderer.py` — `render_package` + `render_section` + `_build_env` with `StrictUndefined`, autoescape off, `currency` + `date` Jinja filters, `PROPOSAL_SECTIONS` ordered tuple (template_stem, heading, sourced_from).
+- `assembly/consistency.py` — 5 checks (`ba_coverage`, `wbs_matches_pricing`, `client_name_consistent`, `rendered_all_sections`, `terminology_aligned`) + helpers.
+- `templates/proposal/_macros.md.j2` — shared `section_header` / `subheader` / `bullet_list` / `section_or_na` / `kv_line` macros.
+- `templates/proposal/{00-cover, 01-executive-summary, 02-business-requirements, 03-technical-approach, 04-wbs-estimation, 05-pricing-commercials, 06-terms-appendix}.md.j2` — 7 section templates with `{% if %}` null-guards.
+- `tests/fixtures/bid_states.py` — 3 seed `AssemblyInput` factories (`full_bid_m`, `minimal_bid_s`, `edge_bid`).
+- `tests/test_proposal_renderer.py` — 6 tests (cover renders client, full 7-section render, Bid-S null HLD+pricing, edge zero-subtotal, StrictUndefined catches typos, all sections non-empty).
+- `tests/test_proposal_consistency.py` — 10 tests (one per check + positive/negative cases + Bid-S null-pricing short-circuit).
+
+**Modified (ai-service):**
+- `pyproject.toml` — add `jinja2 ^3.1.0`.
+- `workflows/artifacts.py` — widen `AssemblyInput` with optional `bid_card`/`triage`/`scoping`/`convergence`/`reviews`/`generated_at` (first three typed `Any` to dodge the `models.py → artifacts.py` import cycle). Import `Any` from typing. DTO backward-compat — every new field has a default.
+- `workflows/bid_workflow.py::_run_s8_assembly` — pass the widened context to `AssemblyInput` (bid_card/triage/scoping/convergence/reviews + `workflow.now()` for `generated_at`).
+- `activities/assembly.py` — complete rewrite: calls `render_package` first, falls back to the pre-3.1 5-section stub on `RendererError`. Stub-fallback flips `consistency_checks["rendered_all_sections"] = False` + sets `template_error = True` so the UI can surface the degradation.
+- `tests/test_activities.py` — 3 new assembly tests (full-template render, template-error → stub shape, Bid-S null-pricing).
+
+**New files (frontend):**
+- `__tests__/proposal-panel.test.tsx` — 4 tests (empty placeholder, 3 sections + titles visible, first section `open` by default, consistency_checks list rendered).
+
+**Modified (frontend):**
+- `package.json` — add `react-markdown ^9.0.0`.
+- `components/workflow/state-detail.tsx::ProposalPanel` — accordion via `<details>` / `<summary>`; first section expanded by default; body rendered with `<ReactMarkdown>`; `data-testid="proposal-section"` on each entry for the test suite. Existing consistency block kept.
+
+**Temporal data-converter quirk (flagged for future devs):**
+- Workflow-side `AssemblyInput(bid_card=BidCard(...), triage=TriageDecision(...), scoping=ScopingResult(...))` is serialized with `Any` fields → reconstructs on the activity side as **plain dicts with ISO-string datetimes**. Templates use Jinja's attribute-then-dict fallback so `bid.client_name` still resolves. The `| date` filter now parses ISO strings (see `assembly/renderer.py::_filter_date`).
+
+**NO CHANGES (by design):**
+- `api-gateway` — `proposal_package` artifact proxied verbatim; shape unchanged; only content richer.
+- `workflows/artifacts.py::ProposalPackage` + `ProposalSection` DTO — unchanged.
+
+**Infra (ai-service Dockerfile):**
+- No change needed — `COPY . .` already picks up the new `templates/` directory; `.dockerignore` does not exclude it. Tests still bind-mount per the existing `project_docker_image_split.md` pattern.
+
+**Contract tables:**
+
+| Proposal section | Template file | sourced_from |
+|---|---|---|
+| Cover Page | `00-cover.md.j2` | `bid_card` |
+| Executive Summary | `01-executive-summary.md.j2` | `ba_draft` |
+| Business Requirements | `02-business-requirements.md.j2` | `ba_draft` |
+| Technical Approach | `03-technical-approach.md.j2` | `sa_draft` |
+| WBS + Estimation | `04-wbs-estimation.md.j2` | `wbs` |
+| Pricing + Commercials | `05-pricing-commercials.md.j2` | `pricing` |
+| Terms + Appendix | `06-terms-appendix.md.j2` | `domain_notes` |
+
+| consistency check | when `False` |
+|---|---|
+| `ba_coverage` | A MUST functional requirement's ID + title missing from all rendered bodies |
+| `wbs_matches_pricing` | `sum(lines) != subtotal` OR `subtotal * (1 + margin/100) != total` (±0.01) |
+| `client_name_consistent` | Client name absent from Cover OR Executive Summary body |
+| `rendered_all_sections` | Fewer than 7 sections (stub-fallback path sets this `False`) |
+| `terminology_aligned` | Same section uses rival terms (customer vs client, solution vs system) |
+
+**Tests at delivery (expected, NOT executed — Docker + Poetry still unavailable on this host):**
+- ai-service: **+19 tests** (6 renderer + 10 consistency + 3 activity). Pre-existing 105 + 19 = **124 target**.
+- api-gateway: **0 new** — unchanged.
+- frontend: **+4 tests** (proposal panel). Pre-existing 43 + 4 = **47 target**.
+
+**Live smoke:** NOT yet run — deferred alongside Phase 3.5's live smoke to Conv-8 with Docker access.
+
+**Runbook (for Conv-8):**
+```bash
+# 1. Confirm local test suites green
+cd src/ai-service && poetry install && poetry run pytest -v
+cd ../api-gateway && npm install && npm run test:e2e
+cd ../frontend && npm install && npx vitest run && npx tsc --noEmit && npm run build
+
+# 2. Docker rebuild (templates are baked in via COPY .)
+cd src && docker compose up -d --build ai-service ai-worker
+docker compose restart ai-worker
+
+# 3. Smoke — any Bid-M workflow reaching S8
+BID_ID=...
+curl -s http://localhost:3000/bids/$BID_ID/workflow/artifacts/proposal_package \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq '.sections[] | {heading, head: .body_markdown[:120]}'
+# Expect 7 entries starting with headings above. Bid-S should show
+# "Not applicable" on Pricing + Technical Approach sections.
+```
+
+**Known gaps carried to Phase 3.1b / later:**
+- DOCX export (`python-docx` + markdown→DOCX) — 3.1b.
+- PDF export (`weasyprint` + system libs) — 3.1b.
+- Client-branded template overrides — 3.3.
+- LLM re-phrasing pass (Sonnet polish after templating) — 3.4 may reuse.
+- `ba_coverage` check uses substring match — false-positive risk when titles are generic; deferred to 3.3 when the audit dashboard can flag noisy checks.
+- `@tailwindcss/typography` plugin NOT installed — `prose` classes on the panel no-op for now. Add in 3.1b or 3.3 if designers want styled markdown.
 
 ### Phase 3.5 Delivery Summary (2026-04-18, Conv-6 solo)
 **Scope:** self-hosted Langfuse tracing wrapped around `ClaudeClient.generate` + `generate_stream`; activity-level spans bound via `_CURRENT_LLM_SPAN` ContextVar so BA/SA/Domain LLM calls land under one `trace_id=str(bid_id)`. Deterministic-first: `LANGFUSE_SECRET_KEY` unset → no-op tracer, zero HTTP traffic, Langfuse container NOT started.
@@ -416,7 +508,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 
 | # | Task | Status | Notes |
 |---|---|---|---|
-| 3.1 | Document generation (proposal templates) | NOT STARTED | |
+| 3.1 | Document generation (proposal templates) | DONE (Jinja-backed) | 7 markdown sections + 5-check consistency + stub-fallback on `RendererError`; frontend accordion via `react-markdown`. DOCX/PDF export deferred to 3.1b |
 | 3.2 | Full RBAC per role | NOT STARTED | |
 | 3.3 | Audit dashboard | NOT STARTED | |
 | 3.4 | Retrospective module (S11) | NOT STARTED | |

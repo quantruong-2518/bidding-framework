@@ -504,6 +504,14 @@ class BidWorkflow:
                 hld=self._hld,
                 wbs=self._wbs,
                 pricing=self._pricing,
+                # Phase 3.1 — widened context so Jinja templates can render
+                # cover + exec-summary + terms appendix without extra queries.
+                bid_card=self._bid_card,
+                triage=self._triage,
+                scoping=self._scoping,
+                convergence=self._convergence,
+                reviews=self._reviews,
+                generated_at=workflow.now(),
             ),
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,

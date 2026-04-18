@@ -8,12 +8,13 @@
 - Upstream: NestJS api-gateway calls us at `http://ai-service:8001/workflows/bid/*`.
 - Downstream: Qdrant (`qdrant:6333`), Temporal (`temporal:7233`), Redis (`redis:6379`), Postgres (`postgres:5432`), Anthropic API.
 
-## Delivery status (Phase 3.5 — Langfuse observability layered on Phase 2 pipeline)
+## Delivery status (Phase 3.1 — Jinja-backed proposal + Langfuse observability)
 - Full 11-state DAG wired end-to-end: S0 Intake → S1 Triage (+human gate) → S2 Scoping → S3a/b/c parallel → S4..S11 → terminal `S11_DONE` (or `S9_BLOCKED` when review gate exhausts rounds).
 - S0/S1/S2 use real heuristics. S3a/b/c have three real LangGraph agents (BA/SA/Domain) with per-activity fallback to deterministic stubs (gate: `config.claude.get_claude_settings().api_key`).
 - S3 streaming (Phase 2.5): `TokenPublisher` + `generate_stream` → Redis pub/sub → frontend `AgentStreamPanel`; `state_transition_activity` broadcasts phase completions.
 - S4 Convergence: heuristic cross-stream conflicts + weighted readiness gate 0.80. Real semantic LLM-compare deferred.
-- S5..S8 still deterministic stubs (Phase 2.1 shape). Phase 3.1 will replace S8 with Jinja templates.
+- S5/S7 real stubs; S6 real WBS template.
+- **S8 Assembly (Phase 3.1):** seven Jinja-rendered proposal sections via `assembly/renderer.py`. Stub-fallback on `RendererError` so a bid never fails on a template glitch.
 - S9 Review gate (Phase 2.4): real signal + loop-back + multi-round cap → `S9_BLOCKED` on exhaustion.
 - S2.6 Profile routing: Bid-S skips S5/S7; Bid-M/L full pipeline; XL logs parity-pending.
 - **Phase 3.5 Langfuse observability:** `ClaudeClient.generate`/`generate_stream` open a generation under an activity-level span when a span is bound via `tools.langfuse_client.span_context`. No-op when `LANGFUSE_SECRET_KEY` unset.
@@ -92,7 +93,8 @@ ai-service/
     solution_design.py       # S5 stub — HLD skeleton from SA draft + convergence report.
     wbs.py                   # S6 stub — default WBS template, effort biased by BA MUSTs.
     commercial.py            # S7 stub — fixed-price advisory model (blended day rate).
-    assembly.py              # S8 stub — compiles BA/SA/Domain/HLD/WBS/Pricing into sections.
+    assembly.py              # S8 Phase 3.1 — calls `assembly.render_package`; falls back to
+                             # the legacy 5-section stub on `RendererError` (template safety net).
     review.py                # S9 stub — auto-approves (consistency_checks always pass on stub
                              # packages). Phase 2.4 replaces with real human signal + loop-back.
     submission.py            # S10 stub — cutover checklist + SHA-256 package checksum.
@@ -109,6 +111,16 @@ ai-service/
     prompts/ba_agent.py      # Versioned system prompts for BA graph
     prompts/sa_agent.py      # SA graph system prompts
     prompts/domain_agent.py  # Domain graph system prompts
+
+  assembly/                  # Phase 3.1 — Jinja2 proposal rendering.
+    __init__.py              # re-exports render_package + RendererError + PROPOSAL_SECTIONS
+    renderer.py              # `render_package(AssemblyInput) -> ProposalPackage`; loads templates
+                             # from ../templates/proposal/*.md.j2 with StrictUndefined + currency/date filters.
+    consistency.py           # 5 cross-section checks: ba_coverage, wbs_matches_pricing,
+                             # client_name_consistent, rendered_all_sections, terminology_aligned.
+
+  templates/proposal/        # Phase 3.1 — 7 .md.j2 section templates + _macros.md.j2.
+                             # Packaged into the ai-service image via Dockerfile `COPY . .`.
 
   tools/
     claude_client.py         # AsyncAnthropic wrapper with cache_control: ephemeral (prompt caching).
@@ -177,6 +189,7 @@ ai-service/
 - **Docker image split:** `ai-service` and `ai-worker` use SEPARATE image tags (`bid-framework-ai-service` vs `bid-framework-ai-worker`) even though they share the Dockerfile. After editing workflow/activity code, rebuild BOTH images and force-recreate the worker container, otherwise the live worker keeps running stale bytecode silently (no error, workflow just stops at an old terminal state).
 - **S3 parallel activities** are dispatched via `asyncio.gather(workflow.execute_activity(...), ...)`. If one stream errors permanently, `gather` cancels the others and the workflow fails. `return_exceptions=True` would let partial success through — add only when Phase 2.2 has real agents that sometimes degrade.
 - **S9 review gate is live (Phase 2.4):** `human_review_decision` signal + earliest-target loop-back + 3-round cap → `S9_BLOCKED` on exhaustion. Seeding a non-APPROVED verdict will re-enter earlier states, so don't test signals against a production bid.
+- **Phase 3.1 assembly DTO quirk:** `AssemblyInput.bid_card` / `triage` / `scoping` are typed `Any` (not their real Pydantic model) to dodge the `workflows.models ↔ artifacts.py` import cycle. On the Temporal activity side these round-trip as plain dicts with ISO-string datetimes; templates use Jinja's attr-then-dict fallback + the `| date` filter parses ISO strings. If you add a template that does `triage.some_pydantic_method()`, reach into `vars(triage)` or refactor the types to live on `workflows.base`.
 
 ## Pointers
 - Root rules: `../../CLAUDE.md`

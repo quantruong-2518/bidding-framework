@@ -1,4 +1,5 @@
 import * as React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -424,17 +425,32 @@ function ProposalPanel({ status }: { status?: WorkflowStatus }): React.ReactElem
   const pkg = status?.proposal_package;
   if (!pkg) return <Empty label="S8" />;
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-testid="proposal-panel">
       <p>
-        <strong>{pkg.title}</strong>
+        <strong>{pkg.title}</strong>{' '}
+        <span className="text-xs text-muted-foreground">
+          ({pkg.sections.length} section{pkg.sections.length === 1 ? '' : 's'})
+        </span>
       </p>
-      <div>
-        <SectionTitle>Sections ({pkg.sections.length})</SectionTitle>
-        <ul className="list-disc space-y-1 pl-4">
-          {pkg.sections.map((s, idx) => (
-            <li key={idx}>{s.heading}</li>
-          ))}
-        </ul>
+      <div className="space-y-2">
+        {pkg.sections.map((section, idx) => (
+          <details
+            key={`${section.heading}-${idx}`}
+            className="rounded border border-border bg-muted/30"
+            open={idx === 0}
+            data-testid="proposal-section"
+          >
+            <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
+              {section.heading}
+            </summary>
+            <div
+              className="prose prose-sm dark:prose-invert max-w-none border-t border-border px-3 py-2"
+              data-testid="proposal-section-body"
+            >
+              <ReactMarkdown>{section.body_markdown}</ReactMarkdown>
+            </div>
+          </details>
+        ))}
       </div>
       <div>
         <SectionTitle>Consistency</SectionTitle>

@@ -1,0 +1,23 @@
+{%- from '_macros.md.j2' import section_header, subheader, bullet_list -%}
+{{ section_header('Executive Summary') }}
+
+{% if bid %}
+{{ ba.executive_summary }}
+
+We are pleased to submit this proposal to **{{ bid.client_name }}** for the
+{{ bid.industry }} engagement ({{ bid.region }}).
+{% else %}
+{{ ba.executive_summary }}
+{% endif %}
+
+{{ subheader('Objectives') }}
+{{ bullet_list(ba.business_objectives, empty='_Objectives to be agreed at kick-off._') }}
+
+{% if convergence %}
+{{ subheader('Readiness view') }}
+{{ convergence.unified_summary }}
+{% endif %}
+
+{% if triage %}
+_Triage score: {{ triage.overall_score }} / 100 — {{ triage.recommendation }}._
+{% endif %}

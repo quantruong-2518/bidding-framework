@@ -1,0 +1,14 @@
+{%- from '_macros.md.j2' import section_header, kv_line -%}
+{{ section_header(title) }}
+
+{% if bid %}
+{{ kv_line('Client', bid.client_name) }}
+{{ kv_line('Industry', bid.industry) }}
+{{ kv_line('Region', bid.region) }}
+{{ kv_line('Bid profile', bid.estimated_profile) }}
+{{ kv_line('Deadline', bid.deadline | date) }}
+{% else %}
+*Bid metadata unavailable — cover generated from title only.*
+{% endif %}
+
+_Prepared on {{ today | date }}._

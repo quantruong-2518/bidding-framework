@@ -5,11 +5,20 @@ Document generation, full RBAC, audit, observability, production deployment.
 
 ---
 
-## Task 3.1: Document Generation
-- Proposal templates (Jinja2 + python-docx)
-- Template library: cover page, executive summary, technical sections, WBS, pricing
-- AI content + template structure -> final PDF/DOCX
-- Consistency checker (numbers, terminology, tone)
+## Task 3.1: Document Generation — DELIVERED (markdown, 3.1b deferred)
+- Jinja2 markdown templates (7 sections) + `assembly.renderer.render_package` replacing the pre-3.1 hand-written stub.
+- Template library: `00-cover`, `01-executive-summary`, `02-business-requirements`, `03-technical-approach`, `04-wbs-estimation`, `05-pricing-commercials`, `06-terms-appendix` + shared `_macros.md.j2`. All null-guarded so Bid-S (no HLD, no pricing) still produces 7 sections with a "Not applicable" placeholder.
+- Consistency checker (`assembly.consistency`): `ba_coverage`, `wbs_matches_pricing`, `client_name_consistent`, `rendered_all_sections`, `terminology_aligned`.
+- Stub-fallback: any `RendererError` routes to the legacy 5-section stub + flips `consistency_checks.template_error = True` so the review gate can see the degradation.
+- Frontend `ProposalPanel` renders each section in a native `<details>` accordion with `react-markdown`.
+
+**Deferred to 3.1b / 3.3:**
+- DOCX export (`python-docx` + markdown→DOCX).
+- PDF export (`weasyprint`; adds ~150 MB image size).
+- Client-branded template overrides (`templates/proposal/overrides/{client_id}/…`).
+- LLM re-phrasing polish pass.
+
+**Delivery manifest:** see memory `project_phase_3_1_delivered.md` and `CURRENT_STATE.md`.
 
 ## Task 3.2: Full RBAC
 - Fine-grained permissions per role per bid

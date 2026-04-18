@@ -1,0 +1,32 @@
+{%- from '_macros.md.j2' import section_header, subheader, bullet_list -%}
+{{ section_header('Business Requirements') }}
+
+{{ subheader('Scope') }}
+**In scope:**
+{{ bullet_list(ba.scope.in_scope, empty='_To be defined._') }}
+
+**Out of scope:**
+{{ bullet_list(ba.scope.out_of_scope, empty='_No exclusions identified._') }}
+
+{{ subheader('Functional requirements') }}
+{% if ba.functional_requirements %}
+| ID | Title | Priority | Rationale |
+| --- | --- | --- | --- |
+{% for fr in ba.functional_requirements %}
+| {{ fr.id }} | {{ fr.title }} | {{ fr.priority }} | {{ fr.rationale }} |
+{% endfor %}
+{% else %}
+*No functional requirements captured.*
+{% endif %}
+
+{{ subheader('Assumptions') }}
+{{ bullet_list(ba.assumptions, empty='_None recorded._') }}
+
+{{ subheader('Key risks (business view)') }}
+{% if ba.risks %}
+{% for risk in ba.risks %}
+- **{{ risk.title }}** — likelihood **{{ risk.likelihood }}**, impact **{{ risk.impact }}**. Mitigation: {{ risk.mitigation }}
+{% endfor %}
+{% else %}
+*No risks identified at this stage.*
+{% endif %}

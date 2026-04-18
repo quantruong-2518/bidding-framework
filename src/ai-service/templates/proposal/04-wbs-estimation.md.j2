@@ -1,0 +1,21 @@
+{%- from '_macros.md.j2' import section_header, subheader -%}
+{{ section_header('WBS + Estimation') }}
+
+{% if wbs.items %}
+{{ subheader('Work packages') }}
+
+| ID | Name | Effort (MD) | Owner |
+| --- | --- | --- | --- |
+{% for item in wbs.items %}
+| {{ item.id }} | {{ item.name }} | {{ '%.1f' | format(item.effort_md) }} | {{ item.owner_role or '_TBD_' }} |
+{% endfor %}
+
+{{ subheader('Totals') }}
+- **Total effort**: {{ '%.1f' | format(wbs.total_effort_md) }} MD
+- **Timeline**: {{ wbs.timeline_weeks }} weeks
+{% if wbs.critical_path %}
+- **Critical path**: {{ wbs.critical_path | join(' → ') }}
+{% endif %}
+{% else %}
+*Not applicable — no work packages captured yet.*
+{% endif %}

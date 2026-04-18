@@ -1,0 +1,71 @@
+{%- from '_macros.md.j2' import section_header, subheader -%}
+{{ section_header('Technical Approach') }}
+
+{% if hld %}
+{{ hld.architecture_overview }}
+
+{{ subheader('Components') }}
+{% if hld.components %}
+{% for c in hld.components %}
+- **{{ c.name }}** — {{ c.responsibility }}{% if c.depends_on %} _(depends on: {{ c.depends_on | join(', ') }})_{% endif %}
+{% endfor %}
+{% else %}
+*Component breakdown pending.*
+{% endif %}
+
+{{ subheader('Data flows') }}
+{% if hld.data_flows %}
+{% for flow in hld.data_flows %}
+- {{ flow }}
+{% endfor %}
+{% else %}
+*Flows TBD.*
+{% endif %}
+
+{{ subheader('Security') }}
+{% if hld.security_approach %}{{ hld.security_approach }}{% else %}*Security plan to follow.*{% endif %}
+
+{{ subheader('Deployment') }}
+{% if hld.deployment_model %}{{ hld.deployment_model }}{% else %}*Deployment model TBD.*{% endif %}
+{% else %}
+_High-level design deferred on this fast-path bid. The approach below is
+derived from the Solution Architecture stream only._
+{% endif %}
+
+{{ subheader('Tech stack (Solution Architecture)') }}
+{% if sa.tech_stack %}
+| Layer | Choice | Rationale |
+| --- | --- | --- |
+{% for ts in sa.tech_stack %}
+| {{ ts.layer }} | {{ ts.choice }} | {{ ts.rationale }} |
+{% endfor %}
+{% else %}
+*Tech stack TBD.*
+{% endif %}
+
+{{ subheader('Architecture patterns') }}
+{% if sa.architecture_patterns %}
+{% for p in sa.architecture_patterns %}
+- **{{ p.name }}** — {{ p.description }}
+{% endfor %}
+{% else %}
+*No patterns called out.*
+{% endif %}
+
+{{ subheader('NFR targets') }}
+{% if sa.nfr_targets %}
+{% for k, v in sa.nfr_targets.items() %}
+- **{{ k }}**: {{ v }}
+{% endfor %}
+{% else %}
+*NFR targets to agree with client.*
+{% endif %}
+
+{{ subheader('Technical risks') }}
+{% if sa.technical_risks %}
+{% for risk in sa.technical_risks %}
+- **{{ risk.title }}** — likelihood **{{ risk.likelihood }}**, impact **{{ risk.impact }}**. Mitigation: {{ risk.mitigation }}
+{% endfor %}
+{% else %}
+*No technical risks flagged yet.*
+{% endif %}
