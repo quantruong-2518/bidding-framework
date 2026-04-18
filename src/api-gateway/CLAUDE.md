@@ -91,7 +91,7 @@ api-gateway/
 
 ## Auth contract
 - Every non-`/health` route requires `Authorization: Bearer <keycloak-access-token>` (RS256, audience `KEYCLOAK_CLIENT_ID=bidding-api`, issuer `{KEYCLOAK_ISSUER}`)
-- Realm `bidding` is NOT yet provisioned in Phase 1 — frontend uses a demo-mode token that will be rejected by `JwtAuthGuard`. Real end-to-end needs `--import-realm` on Keycloak.
+- **Phase 3.2a:** Realm `bidding` is now provisioned via `src/keycloak/bidding-realm.json` + `start-dev --import-realm`. `JwtStrategy` hard-codes `EXPECTED_AUDIENCE = 'bidding-api'` (not from env anymore); the `bidding-frontend` client has an audience mapper that injects `bidding-api` into every access token. If you see `Invalid audience` / 401s, check the mapper + the realm import.
 - Roles on the JWT: `realm_access.roles` → `['admin','bid_manager','ba','sa','qc']`
 
 ## REST surface (Phase 1)

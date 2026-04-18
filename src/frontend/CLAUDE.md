@@ -51,7 +51,10 @@ frontend/
     providers.tsx                # QueryClientProvider (client component)
     page.tsx                     # redirects → /dashboard
     globals.css                  # Tailwind + CSS-var theme tokens
-    login/page.tsx               # paste-JWT OR "Demo mode" (temp until Keycloak realm lands)
+    login/page.tsx               # Phase 3.2a — primary CTA redirects via PKCE to Keycloak;
+                                 # `?devToken=<jwt>` query hack retained for CI only.
+    auth/callback/page.tsx       # Phase 3.2a — OIDC callback: consumes sessionStorage verifier,
+                                 # exchanges code for tokens, stores in useAuthStore.
     api/health/route.ts          # /api/health for Docker healthcheck
 
     (authed)/                    # route group; ProviderGate bounces unauth → /login
@@ -119,7 +122,7 @@ frontend/
 - Artifact keys accepted by `/workflow/artifacts/:type`: `bid_card, triage, scoping, ba_draft, sa_draft, domain_notes, convergence, hld, wbs, pricing, proposal_package, reviews, submission, retrospective` (14 total). See `ARTIFACT_KEYS` on the NestJS controller for the source of truth.
 
 ## Known gotchas
-- Demo-mode token (`demo-token` injected by login page) will be rejected by NestJS `JwtAuthGuard` since the Keycloak realm isn't provisioned yet. UI renders correctly; live data fetches 401 until the realm lands.
+- **Phase 3.2a:** Keycloak realm `bidding` is now provisioned via `src/keycloak/bidding-realm.json` imported on boot. Real PKCE redirects to Keycloak; callback at `/auth/callback` exchanges code → tokens. Demo-mode is retired. For CI, use `?devToken=<jwt>` — the JWT is trusted verbatim (no signature check), so **never ship a CI build to a shared env**. Silent token refresh not yet wired; access tokens expire after 15 min and the app currently returns 401 until re-login (Phase 3.2b follow-up).
 - ReactFlow requires `'use client'` + fixed-height parent. Respect that when adding new layouts.
 - `NEXT_PUBLIC_WS_URL` can be `http://…` — socket.io-client upgrades to WebSocket automatically. Match the NestJS origin.
 - Build uses `output: 'standalone'` for Docker — keep `public/` existing (can be empty).

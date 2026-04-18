@@ -1,0 +1,121 @@
+{
+  "realm": "bidding",
+  "enabled": true,
+  "displayName": "AI Bidding Framework",
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "offlineSessionIdleTimeout": 2592000,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "verifyEmail": false,
+  "sslRequired": "external",
+  "attributes": {
+    "frontendUrl": "http://localhost:8080"
+  },
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Full administrator across all bids."
+      },
+      {
+        "name": "bid_manager",
+        "description": "Owns a bid end-to-end; can approve triage + review gates."
+      },
+      {
+        "name": "ba",
+        "description": "Business Analyst — reviews BA Draft and scoping."
+      },
+      {
+        "name": "sa",
+        "description": "Solution Architect — reviews SA Draft and HLD."
+      },
+      {
+        "name": "qc",
+        "description": "Quality reviewer at the S9 review gate."
+      },
+      {
+        "name": "domain_expert",
+        "description": "Industry expert — reviews domain notes + compliance."
+      },
+      {
+        "name": "solution_lead",
+        "description": "Solution lead — final review on L/XL bids."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "bidding-api",
+      "name": "Bidding API Gateway",
+      "description": "Bearer-only backend — NestJS api-gateway verifies tokens minted for this audience.",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "bidding-frontend",
+      "name": "Bidding Frontend (Next.js)",
+      "description": "Browser-facing public client — PKCE authorization code flow.",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "redirectUris": [
+        "http://localhost:3001/auth/callback",
+        "http://localhost:3001/*"
+      ],
+      "webOrigins": ["http://localhost:3001", "+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "900",
+        "post.logout.redirect.uris": "http://localhost:3001/login##http://localhost:3001/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-bidding-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "bidding-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "bidadmin",
+      "email": "bidadmin@example.com",
+      "firstName": "Bid",
+      "lastName": "Admin",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ChangeMe!",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["admin", "bid_manager"]
+    }
+  ]
+}

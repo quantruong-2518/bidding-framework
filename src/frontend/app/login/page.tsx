@@ -1,72 +1,83 @@
 'use client';
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
-import { KeyRound, Sparkles } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { KeyRound, Loader2, TerminalSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { useAuthStore } from '@/lib/auth/store';
-import { decodeJwt } from '@/lib/auth/keycloak-url';
+import { buildAuthUrl, decodeJwt } from '@/lib/auth/keycloak-url';
 import type { AuthUser } from '@/lib/api/types';
 
 export const dynamic = 'force-dynamic';
 
-// temporary — replaced when Keycloak realm lands.
-const DEMO_USER: AuthUser = {
-  sub: 'demo',
-  username: 'demo',
-  roles: ['bid_manager'],
-};
-
+/**
+ * Phase 3.2a — Keycloak-first login.
+ *
+ * Primary path: "Sign in with Keycloak" → PKCE flow to `/auth/callback`.
+ * Kept for automation: `?devToken=<JWT>` query (decoded + stored verbatim,
+ * no signature validation). The UI never exposes the dev path to a real
+ * user — it only fires when the query param is present.
+ */
 export default function LoginPage(): React.ReactElement {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const hydrated = useAuthStore((s) => s.hydrated);
   const token = useAuthStore((s) => s.accessToken);
-  const [pasted, setPasted] = React.useState('');
-  const [reviewer, setReviewer] = React.useState('demo');
+  const [redirecting, setRedirecting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Already signed in → straight to dashboard.
   React.useEffect(() => {
     if (hydrated && token) {
       router.replace('/dashboard');
     }
   }, [hydrated, token, router]);
 
-  const signInWithToken = (): void => {
-    setError(null);
-    const trimmed = pasted.trim();
-    if (!trimmed) {
-      setError('Paste a JWT first.');
-      return;
-    }
+  // CI bypass: /login?devToken=<JWT> stores the token without a real flow.
+  React.useEffect(() => {
+    if (!hydrated) return;
+    const devToken = searchParams?.get('devToken');
+    if (!devToken) return;
     const payload = decodeJwt<{
       sub?: string;
       preferred_username?: string;
       email?: string;
       realm_access?: { roles?: string[] };
-    }>(trimmed);
+    }>(devToken);
     if (!payload?.sub) {
-      setError('Could not decode JWT — check the value.');
+      setError('Invalid ?devToken payload — must be a decodable JWT.');
       return;
     }
     const user: AuthUser = {
       sub: payload.sub,
-      username: payload.preferred_username ?? reviewer,
+      username: payload.preferred_username ?? payload.sub,
       email: payload.email,
-      roles: payload.realm_access?.roles ?? ['bid_manager'],
+      roles: payload.realm_access?.roles ?? [],
     };
-    setAuth(trimmed, user);
-    router.push('/dashboard');
-  };
+    setAuth(devToken, user);
+    router.replace('/dashboard');
+  }, [hydrated, searchParams, setAuth, router]);
 
-  const signInDemo = (): void => {
-    // temporary — replaced when Keycloak realm lands.
-    setAuth('demo-token', { ...DEMO_USER, username: reviewer || 'demo' });
-    router.push('/dashboard');
+  const onSignIn = async (): Promise<void> => {
+    setError(null);
+    setRedirecting(true);
+    try {
+      const redirectUri = `${window.location.origin}/auth/callback`;
+      const returnTo = searchParams?.get('returnTo') ?? undefined;
+      const url = await buildAuthUrl(redirectUri, { returnTo });
+      window.location.assign(url);
+    } catch (exc) {
+      setRedirecting(false);
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
   };
 
   return (
@@ -75,41 +86,29 @@ export default function LoginPage(): React.ReactElement {
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            Phase 1 PoC: paste a Keycloak JWT or use demo mode. Full OIDC lands
-            in a later wave.
+            Authenticate with your organisation Keycloak account to access the
+            bidding dashboard.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="reviewer">Display name</Label>
-            <Input
-              id="reviewer"
-              value={reviewer}
-              onChange={(e) => setReviewer(e.target.value)}
-            />
-          </div>
-          <div>
-            <Label htmlFor="token">Bearer token</Label>
-            <Textarea
-              id="token"
-              rows={4}
-              placeholder="eyJhbGciOi…"
-              value={pasted}
-              onChange={(e) => setPasted(e.target.value)}
-              className="font-mono text-xs"
-            />
-          </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className="flex flex-col gap-2">
-            <Button onClick={signInWithToken}>
+          <Button
+            onClick={() => void onSignIn()}
+            disabled={redirecting}
+            className="w-full"
+          >
+            {redirecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
               <KeyRound className="h-4 w-4" />
-              Sign in with token
-            </Button>
-            <Button variant="secondary" onClick={signInDemo}>
-              <Sparkles className="h-4 w-4" />
-              Demo mode
-            </Button>
-          </div>
+            )}
+            Sign in with Keycloak
+          </Button>
+          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+            <TerminalSquare className="h-3 w-3" />
+            CI bypass: append <span className="font-mono">?devToken=&lt;jwt&gt;</span>
+            {' '}to this URL.
+          </p>
         </CardContent>
       </Card>
     </main>

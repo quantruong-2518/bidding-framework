@@ -6,9 +6,15 @@ import type { AuthUser } from '@/lib/api/types';
 
 interface AuthState {
   accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: number | null;
   user: AuthUser | null;
   hydrated: boolean;
-  setAuth: (token: string, user: AuthUser) => void;
+  setAuth: (
+    token: string,
+    user: AuthUser,
+    extras?: { refreshToken?: string; expiresAt?: number },
+  ) => void;
   clearAuth: () => void;
   markHydrated: () => void;
   isAuthenticated: () => boolean;
@@ -22,10 +28,24 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       accessToken: null,
+      refreshToken: null,
+      expiresAt: null,
       user: null,
       hydrated: false,
-      setAuth: (token, user) => set({ accessToken: token, user }),
-      clearAuth: () => set({ accessToken: null, user: null }),
+      setAuth: (token, user, extras) =>
+        set({
+          accessToken: token,
+          user,
+          refreshToken: extras?.refreshToken ?? null,
+          expiresAt: extras?.expiresAt ?? null,
+        }),
+      clearAuth: () =>
+        set({
+          accessToken: null,
+          refreshToken: null,
+          expiresAt: null,
+          user: null,
+        }),
       markHydrated: () => set({ hydrated: true }),
       isAuthenticated: () => Boolean(get().accessToken),
     }),
@@ -45,6 +65,8 @@ export const useAuthStore = create<AuthState>()(
       }),
       partialize: (state) => ({
         accessToken: state.accessToken,
+        refreshToken: state.refreshToken,
+        expiresAt: state.expiresAt,
         user: state.user,
       }),
       onRehydrateStorage: () => (state) => {

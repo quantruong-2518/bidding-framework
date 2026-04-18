@@ -98,7 +98,11 @@ services:
     image: quay.io/keycloak/keycloak:24.0
     container_name: bid-keycloak
     restart: unless-stopped
-    command: ["start-dev", "--health-enabled=true"]
+    # Phase 3.2a — `--import-realm` provisions the `bidding` realm on first
+    # boot from files mounted under /opt/keycloak/data/import. Idempotent:
+    # subsequent starts see the realm already exists and skip. Drop the
+    # `keycloak_data` volume to force a re-import.
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
@@ -111,6 +115,7 @@ services:
       - "9000:9000"
     volumes:
       - keycloak_data:/opt/keycloak/data
+      - ./keycloak:/opt/keycloak/data/import:ro
     healthcheck:
       # Keycloak 24 exposes /health/ready on the main HTTP port 8080 (management port 9000 is KC 25+).
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3; grep -q 'UP' <&3"]

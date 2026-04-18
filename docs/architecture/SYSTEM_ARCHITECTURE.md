@@ -168,7 +168,7 @@ Each architectural component maps to concrete files and containers. For the per-
 ### Frontend — Next.js App Router (`src/frontend/`)
 - App Router routes: `app/{login,(authed)/dashboard,(authed)/bids,(authed)/bids/new,(authed)/bids/[id]}`
 - ReactFlow DAG: `components/workflow/workflow-graph.tsx` (S0..S11 incl. S3a/b/c parallel row); `lib/utils/state-palette.ts` is the single source-of-truth for state labels/colors
-- Auth: zustand store `lib/auth/store.ts` + PKCE URL builder `lib/auth/keycloak-url.ts` (demo-mode + paste-JWT until realm provisioned)
+- Auth (Phase 3.2a): zustand store `lib/auth/store.ts` (access + refresh + expiresAt) + real PKCE flow in `lib/auth/{pkce,keycloak-url,token-exchange}.ts` + `/auth/callback` handler. Realm `bidding` provisioned via `src/keycloak/bidding-realm.json` + `start-dev --import-realm`. Demo-mode retired; `?devToken=<jwt>` kept as CI bypass only.
 - Data layer: TanStack Query hooks `lib/hooks/use-bids.ts`; typed REST wrappers `lib/api/{client,bids,types}.ts`
 - Realtime: singleton `socket.io-client` `lib/ws/socket.ts` + per-bid subscription hook `lib/ws/use-bid-events.ts` (invalidates Query cache on `bid.event`)
 

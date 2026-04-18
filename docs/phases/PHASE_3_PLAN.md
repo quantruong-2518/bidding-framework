@@ -20,7 +20,16 @@ Document generation, full RBAC, audit, observability, production deployment.
 
 **Delivery manifest:** see memory `project_phase_3_1_delivered.md` and `CURRENT_STATE.md`.
 
-## Task 3.2: Full RBAC
+## Task 3.2a: Keycloak realm + PKCE frontend + audience check — DELIVERED (code) · smoke deferred
+- `src/keycloak/bidding-realm.json` imported by Keycloak on boot (`start-dev --import-realm`); 7 realm roles + 2 clients (`bidding-api` bearer-only, `bidding-frontend` public PKCE).
+- Audience mapper on `bidding-frontend` injects `bidding-api` into every access token; NestJS `JwtStrategy` hard-codes `EXPECTED_AUDIENCE='bidding-api'` + a belt-and-braces `matchesAudience` guard inside `validate()`.
+- Frontend ships real PKCE: `pkce.ts` / `keycloak-url.ts::buildAuthUrl+consumePkceState` / `token-exchange.ts` / `/auth/callback/page.tsx`. Demo-mode button retired; `?devToken=<jwt>` URL query kept as CI bypass.
+- Zustand store now persists `refreshToken` + `expiresAt`.
+- Seed user `bidadmin / ChangeMe!` with `temporary: true` (forced password change on first login).
+
+**Live-LLM smoke deferred:** needs Docker + `ANTHROPIC_API_KEY` + manual `bidadmin` password rotation. Checklist in `CURRENT_STATE.md` → Phase 3.2a Delivery Summary.
+
+## Task 3.2b: Full RBAC (per-artifact ACL + audit log + bids migration)
 - Fine-grained permissions per role per bid
 - Row-level security in PostgreSQL
 - Stream access control (SA sees tech, BA sees business, etc.)

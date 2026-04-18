@@ -3,12 +3,14 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 3.1 delivery — Conv-7 solo)
+## Last Updated: 2026-04-18 (Phase 3.2a code delivery — Conv-8 solo, live-LLM smoke deferred)
 
-## Overall Status: PHASE 3.5 + 3.1 COMPLETE — next = Phase 3.2a (Keycloak realm + live-LLM smoke, Conv-8 PAIR)
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a (code) COMPLETE — next = Phase 3.2a live smoke + Phase 3.2b RBAC
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-8 = Phase 3.2a Keycloak.** Plan in `memory/project_phase_3_2a_detailed_plan.md`. Requires real Keycloak auth — paired task (needs external realm JSON + live ANTHROPIC_API_KEY to close Phase 2.2/2.5/3.1/3.5 smoke carry-forward).
+**Next conversation = Conv-8b (smoke) OR Conv-9 (Phase 3.2b).** Two options:
+- **Smoke first (recommended):** Stand up Docker + set `ANTHROPIC_API_KEY`, run the Phase 3.2a live-LLM checklist (`project_phase_3_2a_delivered.md` §Deferred smoke). Closes 4 carry-forwards (Phase 2.2 / 2.5 / 3.1 / 3.5) in one walkthrough.
+- **Phase 3.2b (Conv-9):** per-artifact ACL + audit log + `bids` TypeORM migration. Plan in `memory/project_phase_3_2b_detailed_plan.md`. Does NOT block on smoke.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
@@ -32,6 +34,79 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.2a Delivery Summary (2026-04-18, Conv-8 solo — code only, live-LLM smoke deferred)
+**Scope:** Keycloak realm `bidding` provisioned via `--import-realm`, retire demo-mode in favour of real PKCE + `/auth/callback`, hard-code audience `bidding-api` in the NestJS JWT strategy. The "pair task" half that required Docker + ANTHROPIC_API_KEY (live-LLM smoke) is carried forward.
+
+**New files (infra):**
+- `src/keycloak/bidding-realm.json` — realm with 7 roles (admin, bid_manager, ba, sa, qc, domain_expert, solution_lead) + 2 clients (`bidding-api` bearer-only, `bidding-frontend` public PKCE-S256) + audience mapper on the frontend client that injects `bidding-api` into every access token. Seed user `bidadmin / ChangeMe!` with `temporary: true`.
+- `src/keycloak/README.md` — runbook for first-login, adding users, re-exporting the realm, and the known gotchas (audience mapper, `##` separator on post-logout URIs, temporary-password quirk).
+
+**Modified (infra):**
+- `src/docker-compose.yml` — Keycloak `command: ["start-dev", "--import-realm", "--health-enabled=true"]` + new volume mount `./keycloak:/opt/keycloak/data/import:ro`.
+
+**Modified (api-gateway):**
+- `src/auth/jwt.strategy.ts` — `EXPECTED_AUDIENCE = 'bidding-api'` constant + belt-and-braces `matchesAudience` guard inside `validate()` in addition to passport-jwt's own aud check. No longer reads `KEYCLOAK_CLIENT_ID` (hard-coded per D12). Throws `UnauthorizedException` on mismatch.
+- `test/auth/jwt.strategy.spec.ts` — NEW. 7 tests: valid payload → AuthenticatedUser; role fallback; username fallback; aud string accepted; aud array accepted; aud string rejected; aud array without bidding-api rejected; missing aud rejected.
+
+**New files (frontend):**
+- `lib/auth/pkce.ts` — `generateCodeVerifier`, `computeCodeChallenge` (SHA-256 + base64url), `generateState`, `base64urlEncode`. WebCrypto-only — throws when `crypto.subtle` unavailable.
+- `lib/auth/token-exchange.ts` — `exchangeCodeForToken` + `refreshAccessToken` POSTing to the Keycloak token endpoint. Parses access-token claims to reconstruct `AuthUser`. Fetch mockable via `fetchImpl` kwarg for tests.
+- `app/auth/callback/page.tsx` — OIDC redirect handler: reads `?code` + `?state`, consumes sessionStorage verifier, exchanges for tokens, stores in `useAuthStore`, redirects to returnTo or `/dashboard`. Renders a friendly error on state mismatch / OAuth error.
+- `__tests__/pkce.test.ts` — 5 tests including the RFC 7636 Appendix B vector (`dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk` → `E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`).
+- `__tests__/keycloak-url.test.ts` — 6 tests covering `buildAuthUrl` / `consumePkceState` / `buildLogoutUrl` + config defaults.
+- `__tests__/auth-callback.test.tsx` — 4 tests (happy path, returnTo, state mismatch, OAuth error response).
+
+**Modified (frontend):**
+- `lib/auth/keycloak-url.ts` — rewritten from Phase 1 stub to full PKCE flow: `buildAuthUrl` persists verifier + state + optional returnTo into sessionStorage; `consumePkceState` pulls them back out (one-shot, wipes on both success + failure); `buildLogoutUrl` emits the end-session URL; `decodeJwt` kept for the `?devToken=` CI path. Default client id flipped to `bidding-frontend` (was `bidding-web`).
+- `lib/auth/store.ts` — `setAuth` now takes optional `{ refreshToken, expiresAt }`; new fields persisted in sessionStorage; `clearAuth` wipes them too.
+- `app/login/page.tsx` — demo-mode button retired. Primary CTA now redirects through `buildAuthUrl`. `?devToken=<jwt>` URL param is the only non-Keycloak entry path (auto-runs on mount; no UI).
+
+**Modified (docs):**
+- `docs/architecture/SYSTEM_ARCHITECTURE.md` — frontend Auth section rewritten to reflect the PKCE flow + realm provisioning.
+
+**NOT changed (by design):**
+- `src/.env.example` — file is in a denied directory from this conversation's perspective; dev env vars below must be added manually. Keep existing `KEYCLOAK_ISSUER`, add/verify `NEXT_PUBLIC_KEYCLOAK_URL=http://localhost:8080`, `NEXT_PUBLIC_KEYCLOAK_REALM=bidding`, `NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=bidding-frontend`.
+
+**Contract tables:**
+
+| Phase 3.2a env var | Default | Scope | Notes |
+|---|---|---|---|
+| `KEYCLOAK_ADMIN` | `admin` | Keycloak container | superuser bootstrap |
+| `KEYCLOAK_ADMIN_PASSWORD` | `admin` | Keycloak container | **change before sharing the host** |
+| `KEYCLOAK_ISSUER` | `http://keycloak:8080/realms/bidding` | api-gateway | JWKS source for passport-jwt |
+| `NEXT_PUBLIC_KEYCLOAK_URL` | `http://localhost:8080` | frontend | browser-facing Keycloak origin |
+| `NEXT_PUBLIC_KEYCLOAK_REALM` | `bidding` | frontend | realm path segment |
+| `NEXT_PUBLIC_KEYCLOAK_CLIENT_ID` | `bidding-frontend` | frontend | public PKCE client id |
+
+**Tests at delivery (expected, NOT executed — Docker + Poetry unavailable on this host):**
+- api-gateway: **+7 tests** (all in new `test/auth/jwt.strategy.spec.ts`). Pre-existing 19 → **26 target**.
+- frontend: **+15 tests** (5 pkce + 6 keycloak-url + 4 auth-callback). Pre-existing 47 → **62 target**.
+- ai-service: unchanged.
+- `docker compose config` parses clean with the new `./keycloak` mount + `--import-realm` flag.
+- `jq . bidding-realm.json` validates.
+
+**Deferred smoke (Phase D in plan) — CARRY-FORWARD to Conv-8b:**
+1. `cp src/.env.example src/.env` + set `ANTHROPIC_API_KEY=sk-ant-...`.
+2. `cd src && docker compose up -d --build` — all 10 services healthy (Langfuse NOT started by default).
+3. Verify realm imported: `curl http://localhost:8080/realms/bidding/.well-known/openid-configuration | jq .issuer`.
+4. Log into Keycloak Admin UI (admin / admin) → realm `bidding` → change `bidadmin` password (forced).
+5. Log into frontend at `http://localhost:3001` as `bidadmin` → triggers PKCE → `/auth/callback` → dashboard.
+6. Create Bid-M → Trigger workflow → approve triage → approve review.
+7. Simultaneously `docker exec bid-redis redis-cli PSUBSCRIBE 'bid.events.channel.*'` — expect `state_completed` + `agent_token` events.
+8. `GET /bids/:id/workflow/artifacts/ba_draft` — `executive_summary` must NOT start with `"Stub BA summary"`.
+9. Open Langfuse (optional, needs `--profile observability`) at `http://localhost:3002/trace/<bid_id>`. Expect 1 trace / 3 spans / 9 generations.
+10. `GET /bids/:id/workflow/artifacts/proposal_package` — 7 sections with real template output (not 5-section stub).
+11. `pytest -m integration -v` via bind-mount as the final gate.
+
+Rebuild BOTH `ai-service` + `ai-worker` images between steps 1 and 2 — see `memory/project_docker_image_split.md`.
+
+**Known gaps carried to Phase 3.2b / later:**
+- `src/.env.example` edit — still permission-denied on this host. Add the 6 new `KEYCLOAK_*` + `NEXT_PUBLIC_KEYCLOAK_*` rows on the next conv with write access.
+- Silent token refresh before `expiresAt` — not wired yet. Access tokens expire in 15 min; app will 401 after that. Phase 3.2b (or a small follow-up) wires a silent-refresh timer in `useAuthStore`.
+- Logout button/UI — `buildLogoutUrl` exists but no UI consumer yet. Trivial — top-bar user menu in Phase 3.2b.
+- Keycloak HA + persistent realm secrets — Phase 3.6 Helm chart.
+- Live-LLM smoke runbook above — block of Conv-8b when infra available.
 
 ### Phase 3.1 Delivery Summary (2026-04-18, Conv-7 solo)
 **Scope:** replace the hand-written stub sections in `activities/assembly.py` with Jinja2-rendered proposal output. 7 sections per `ProposalPackage`; per-section null-guards (Bid-S skips HLD + pricing → "Not applicable"); `RendererError` triggers stub-fallback so a bid never fails on templating. Frontend `ProposalPanel` now renders full markdown via `react-markdown` with per-section `<details>` accordion. No LLM — $0.
@@ -509,7 +584,8 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | # | Task | Status | Notes |
 |---|---|---|---|
 | 3.1 | Document generation (proposal templates) | DONE (Jinja-backed) | 7 markdown sections + 5-check consistency + stub-fallback on `RendererError`; frontend accordion via `react-markdown`. DOCX/PDF export deferred to 3.1b |
-| 3.2 | Full RBAC per role | NOT STARTED | |
+| 3.2a | Keycloak realm + PKCE frontend + audience check | DONE (code) · smoke deferred | `bidding-realm.json` imported by Keycloak; demo-mode retired; JwtStrategy hard-codes `bidding-api` audience. Live-LLM smoke waits for Docker + ANTHROPIC_API_KEY |
+| 3.2b | Full RBAC per role (per-artifact ACL + audit + bids migration) | NOT STARTED | |
 | 3.3 | Audit dashboard | NOT STARTED | |
 | 3.4 | Retrospective module (S11) | NOT STARTED | |
 | 3.5 | LLM observability (Langfuse) | DONE (deterministic-first) | LangfuseTracer noop wrapper + SDK path; activity spans + ClaudeClient generations; /bids/:id/trace-url gateway; Langfuse-link frontend button; docker-compose `profiles:["observability"]`. Live smoke + `.env.example` deferred |
