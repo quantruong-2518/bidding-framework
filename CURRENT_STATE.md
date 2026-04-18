@@ -8,15 +8,30 @@
 ## Overall Status: PHASE 2 COMPLETE (all 7 sub-tasks) — next = Phase 3 (production hardening)
 
 ## >>> NEXT ACTION <<<
-**Phase 3 roadmap locked** in memory `project_phase_3_roadmap.md` — 7 sub-tasks, ~7 conversations, MVP-pilot path (3.5 → 3.1 → 3.2a → 3.6) + post-pilot (3.2b → 3.3 → 3.4 → 3.7). Only 3.6 + 3.7 block on external infra; 3.1–3.5 all $0 + self-provisioned.
+**All Phase 3 detailed plans locked** — each of 7 sub-tasks has a ready-to-execute plan in memory. No more survey / design work needed; next conversation starts coding immediately.
 
-**Conv-6 (next, SOLO): Phase 3.5 Langfuse observability.** Plan in `project_phase_3_5_detailed_plan.md` — 12 decisions, 21-step order, ~500 LOC. Self-hosted under `profiles: ["observability"]`; wraps `ClaudeClient.generate` + `generate_stream` via `_CURRENT_LLM_SPAN` ContextVar; `trace_id = str(bid_id)` convention keeps workflow determinism. Rationale: observability-first — instrument BEFORE user turns on real LLM so first real tokens have full traces.
+**Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
-**Conv-7 (SOLO): Phase 3.1 Jinja proposal templates.** Plan in `project_phase_3_1_detailed_plan.md` — 10 decisions, 22-step order, ~800 LOC. Replaces `assembly.py` stub with 7-section Jinja templates; stub-fallback on `TemplateError`; consistency checker (5 rules); `react-markdown` on frontend. End-user visible output for pilot demos.
+**Per-task plans (read the one for the next conversation, not all at once):**
 
-**Conv-8 (PAIR): Phase 3.2a Keycloak realm + Live-LLM smoke.** Plan TBD — roadmap breaks out sub-deliverables. Realm provisioning unblocks real auth; smoke runbook closes Phase 2 live-LLM carry-forward while realm is fresh context.
+| Conv | Task | Plan | Scope | External dep |
+|---|---|---|---|---|
+| 6 | 3.5 Langfuse | `project_phase_3_5_detailed_plan.md` | 12 decisions, 21 steps, ~500 LOC | $0 |
+| 7 | 3.1 Jinja templates | `project_phase_3_1_detailed_plan.md` | 10 decisions, 22 steps, ~800 LOC | $0 |
+| 8 | 3.2a Keycloak + live-LLM smoke | `project_phase_3_2a_detailed_plan.md` | 12 decisions, 18 steps, ~500 LOC | $0 (+ ANTHROPIC_API_KEY for smoke) |
+| 9 | 3.2b RBAC + audit log + bids→Postgres | `project_phase_3_2b_detailed_plan.md` | 12 decisions, 24 steps, ~1200 LOC | $0 |
+| 10 | 3.3 Audit dashboard | `project_phase_3_3_detailed_plan.md` | 12 decisions, 18 steps, ~1200 LOC | $0 (reads 3.5 + 3.2b) |
+| 11 | 3.4 Retrospective + multi-tenant | `project_phase_3_4_detailed_plan.md` | 12 decisions, 26 steps, ~1000 LOC | ~$0.01–0.05/bid |
+| 12 | 3.6 K8s (Helm) + 3.7 Load test (k6) | `project_phase_3_6_detailed_plan.md` + `project_phase_3_7_detailed_plan.md` | ~2100 LOC combined | $$ cluster + $ runner |
 
-**Later conversations:** 3.2b RBAC depth + audit log → 3.3 audit dashboard → 3.4 retrospective + kb-vault multi-tenant → 3.6 K8s + 3.7 load test. See roadmap for ordering rationale.
+**Dependency order locked:**
+- 3.5 before real LLM (observability-first)
+- 3.2a before 3.2b (realm is RBAC foundation)
+- 3.5 + 3.2b before 3.3 (dashboard reads from both)
+- 3.4 closes Phase 2.7 kb-vault carry-forward (multi-tenant filter enables prior-bid RAG)
+- 3.6 before 3.7 (load test needs real cluster target)
+
+**Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
 
 ### Phase 2.5 Delivery Summary (2026-04-18, Conv-5 solo)
 **Scope:** real-time agent token streaming + per-phase `state_completed` events + frontend `AgentStreamPanel`. All on the existing Redis pub/sub + socket.io fanout — zero new infra. Deterministic-first: zero `agent_token` publishes when `ANTHROPIC_API_KEY` absent; `state_completed` always fires.
