@@ -11,6 +11,7 @@ import logging
 from temporalio import activity
 
 from agents.domain_agent import run_domain_agent
+from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
 from workflows.artifacts import DomainNotes, StreamInput
 
@@ -34,7 +35,16 @@ async def domain_mining_activity(req: StreamInput) -> DomainNotes:
     )
     activity.heartbeat("domain_agent_started")
 
-    notes = await run_domain_agent(req)
+    publisher = TokenPublisher(
+        bid_id=str(req.bid_id),
+        agent="domain",
+        attempt=activity.info().attempt,
+    )
+    try:
+        async with stream_context(publisher):
+            notes = await run_domain_agent(req)
+    finally:
+        await publisher.aclose()
 
     activity.heartbeat("domain_agent_completed")
     activity.logger.info(

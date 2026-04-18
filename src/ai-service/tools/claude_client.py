@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
@@ -11,7 +11,15 @@ from config.claude import HAIKU, SONNET, get_claude_settings
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ClaudeClient", "ClaudeResponse", "HAIKU", "SONNET"]
+OnTokenCallback = Callable[[str], Awaitable[None]]
+
+__all__ = [
+    "ClaudeClient",
+    "ClaudeResponse",
+    "HAIKU",
+    "SONNET",
+    "OnTokenCallback",
+]
 
 
 class ClaudeResponse(BaseModel):
@@ -86,6 +94,66 @@ class ClaudeClient:
         )
 
         return _to_claude_response(response)
+
+    async def generate_stream(
+        self,
+        model: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        *,
+        on_token: OnTokenCallback | None = None,
+        cache_system: bool = True,
+        max_tokens: int = 2048,
+        temperature: float = 0.2,
+    ) -> ClaudeResponse:
+        """Stream tokens to ``on_token`` as they arrive; return the final completion.
+
+        Mirrors :meth:`generate` — same prompt caching wiring, same final
+        :class:`ClaudeResponse` shape — but uses Anthropic's ``messages.stream``
+        API under the hood so callers can forward each ``text_delta`` to a
+        sink (e.g. the Phase 2.5 :class:`TokenPublisher`) before the model
+        finishes. The BA/SA/Domain agents still parse the returned
+        ``response.text`` as JSON after streaming completes, so this method
+        preserves their existing control flow.
+        """
+        client = self._get_client()
+
+        system_payload: list[dict[str, Any]] | str
+        if cache_system:
+            system_payload = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        else:
+            system_payload = system
+
+        logger.debug(
+            "claude.stream.request model=%s msgs=%d cache_system=%s",
+            model,
+            len(messages),
+            cache_system,
+        )
+        async with client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_payload,
+            messages=messages,
+        ) as stream:
+            async for text_delta in stream.text_stream:
+                if not text_delta:
+                    continue
+                if on_token is not None:
+                    try:
+                        await on_token(text_delta)
+                    except Exception as exc:  # noqa: BLE001 — streaming never blocks
+                        logger.warning("claude.stream.on_token_error err=%s", exc)
+            final_message = await stream.get_final_message()
+
+        return _to_claude_response(final_message)
 
 
 def _to_claude_response(response: Any) -> ClaudeResponse:

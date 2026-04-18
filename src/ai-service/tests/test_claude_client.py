@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -86,6 +87,108 @@ async def test_generate_captures_usage_tokens() -> None:
         "cache_creation_input_tokens": 100,
         "cache_read_input_tokens": 200,
     }
+
+
+class _FakeStream:
+    def __init__(self, deltas: list[str], final_response: SimpleNamespace) -> None:
+        self._deltas = deltas
+        self._final = final_response
+
+    async def __aenter__(self) -> "_FakeStream":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    @property
+    def text_stream(self) -> "AsyncIterator[str]":  # noqa: F821
+        async def _gen() -> "AsyncIterator[str]":  # noqa: F821
+            for delta in self._deltas:
+                yield delta
+
+        return _gen()
+
+    async def get_final_message(self) -> SimpleNamespace:
+        return self._final
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_forwards_deltas_and_returns_final() -> None:
+    """generate_stream must call on_token per delta + return the final ClaudeResponse."""
+    deltas = ["Hello ", "world", "!"]
+    final = _fake_response(text="Hello world!", model=SONNET)
+    stream_obj = _FakeStream(deltas, final)
+
+    def _stream_factory(**_kwargs: Any) -> _FakeStream:
+        return stream_obj
+
+    inner = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=AsyncMock(),
+            stream=_stream_factory,
+        )
+    )
+    client = ClaudeClient(client=inner)
+
+    collected: list[str] = []
+
+    async def _on_token(text: str) -> None:
+        collected.append(text)
+
+    resp = await client.generate_stream(
+        model=SONNET,
+        system="sys",
+        messages=[{"role": "user", "content": "q"}],
+        on_token=_on_token,
+    )
+
+    assert collected == deltas
+    assert resp.text == "Hello world!"
+    assert resp.stop_reason == "end_turn"
+    assert resp.usage["output_tokens"] == 34
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_without_callback_still_drains_and_returns() -> None:
+    """on_token=None must still iterate the stream (otherwise Anthropic SDK stalls)."""
+    stream_obj = _FakeStream(["a", "b"], _fake_response(text="ab"))
+    inner = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=AsyncMock(),
+            stream=lambda **_kwargs: stream_obj,
+        )
+    )
+    client = ClaudeClient(client=inner)
+    resp = await client.generate_stream(
+        model=HAIKU,
+        system="sys",
+        messages=[{"role": "user", "content": "q"}],
+    )
+    assert resp.text == "ab"
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_swallows_on_token_errors() -> None:
+    """A failing on_token callback must log + swallow; streaming continues."""
+    stream_obj = _FakeStream(["x", "y", "z"], _fake_response(text="xyz"))
+    inner = SimpleNamespace(
+        messages=SimpleNamespace(
+            create=AsyncMock(),
+            stream=lambda **_kwargs: stream_obj,
+        )
+    )
+    client = ClaudeClient(client=inner)
+
+    async def _bad_token(_text: str) -> None:
+        raise RuntimeError("publisher down")
+
+    resp = await client.generate_stream(
+        model=HAIKU,
+        system="sys",
+        messages=[{"role": "user", "content": "q"}],
+        on_token=_bad_token,
+    )
+    assert resp.text == "xyz"
 
 
 @pytest.mark.asyncio

@@ -28,7 +28,7 @@ export default function BidDetailPage(): React.ReactElement {
   const bid = useBid(id);
   const workflow = useWorkflowStatus(id);
   const trigger = useTriggerWorkflow();
-  const { connected } = useBidEvents(id);
+  const { connected, agentStreams } = useBidEvents(id);
   const [selected, setSelected] = React.useState<NodeKind | null>(null);
 
   const currentState: WorkflowState | null =
@@ -143,7 +143,11 @@ export default function BidDetailPage(): React.ReactElement {
             </div>
           )}
 
-          <StateDetail selected={selected ?? inferSelected(currentState)} status={workflow.data} />
+          <StateDetail
+            selected={selected ?? inferSelected(currentState)}
+            status={workflow.data}
+            agentStreams={agentStreams}
+          />
 
           <Card>
             <CardHeader>

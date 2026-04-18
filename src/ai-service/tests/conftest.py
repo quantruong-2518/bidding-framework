@@ -63,6 +63,55 @@ def _compress_gate_timeouts(request, monkeypatch):
     yield
 
 
+class _RedisCapture:
+    """Drop-in replacement for aioredis client — records publishes in-memory."""
+
+    def __init__(self) -> None:
+        import json as _json
+
+        self._json = _json
+        self.published: list[tuple[str, dict]] = []
+
+    async def publish(self, channel: str, message: str) -> int:
+        try:
+            payload = self._json.loads(message)
+        except Exception:  # noqa: BLE001
+            payload = {"raw": message}
+        self.published.append((channel, payload))
+        return 1
+
+    async def aclose(self) -> None:
+        pass
+
+    def events_of_type(self, event_type: str) -> list[dict]:
+        return [p for _, p in self.published if p.get("type") == event_type]
+
+
+@pytest.fixture(autouse=True)
+def _stub_redis_publish(request, monkeypatch):
+    """Redirect aioredis.from_url across all publishers to an in-memory capture.
+
+    Integration tests hit real Redis + external services; they opt out. Unit
+    tests inspect `_stub_redis_publish.published` to assert bid.event contracts.
+    """
+    if "integration" in request.keywords:
+        yield None
+        return
+
+    capture = _RedisCapture()
+
+    def _from_url(*_args, **_kwargs):
+        return capture
+
+    for module_path in (
+        "activities.notify",
+        "activities.state_transition",
+        "agents.stream_publisher",
+    ):
+        monkeypatch.setattr(f"{module_path}.aioredis.from_url", _from_url, raising=False)
+    yield capture
+
+
 @pytest.fixture(autouse=True)
 def _sandbox_kb_vault(tmp_path, monkeypatch):
     """Redirect per-bid vault writes into pytest's tmp_path so workflow tests stay hermetic.

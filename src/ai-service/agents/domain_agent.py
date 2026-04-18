@@ -15,6 +15,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from agents._streaming import call_llm
 from agents.prompts.domain_agent import (
     SYSTEM_PROMPT_EXTRACT,
     SYSTEM_PROMPT_REVIEW,
@@ -95,10 +96,12 @@ async def tag_atoms(state: DomainState) -> DomainState:
     )
     client = _get_client()
     try:
-        response = await client.generate(
+        response = await call_llm(
+            client,
             model=HAIKU,
             system=SYSTEM_PROMPT_EXTRACT,
             messages=[{"role": "user", "content": user_payload}],
+            node_name="tag_atoms",
             max_tokens=1024,
             temperature=0.0,
         )
@@ -172,10 +175,12 @@ async def synthesize_draft(state: DomainState) -> DomainState:
     last_error: str | None = None
     for attempt in range(2):
         try:
-            response = await client.generate(
+            response = await call_llm(
+                client,
                 model=SONNET,
                 system=SYSTEM_PROMPT_SYNTHESIZE,
                 messages=messages,
+                node_name="synthesize_draft",
                 max_tokens=4096,
                 temperature=0.2,
             )
@@ -227,10 +232,12 @@ async def self_critique(state: DomainState) -> DomainState:
         ensure_ascii=False,
     )
     try:
-        response = await client.generate(
+        response = await call_llm(
+            client,
             model=SONNET,
             system=SYSTEM_PROMPT_REVIEW,
             messages=[{"role": "user", "content": user_payload}],
+            node_name="self_critique",
             max_tokens=1024,
             temperature=0.0,
         )

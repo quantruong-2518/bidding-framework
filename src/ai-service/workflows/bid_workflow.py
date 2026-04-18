@@ -115,6 +115,10 @@ with workflow.unsafe.imports_passed_through():
     from activities.sa_analysis import sa_analysis_activity
     from activities.scoping import scoping_activity
     from activities.solution_design import solution_design_activity
+    from activities.state_transition import (
+        NotifyStateTransitionInput,
+        state_transition_activity,
+    )
     from activities.submission import submission_activity
     from activities.triage import triage_activity
     from activities.wbs import wbs_activity
@@ -178,6 +182,25 @@ _WORKSPACE_RETRY = RetryPolicy(
     maximum_attempts=2,
     backoff_coefficient=2.0,
 )
+
+# Phase 2.5 — which BidState fields were written during each phase. Published
+# alongside `state_completed` events so the frontend can refetch only the
+# affected artifacts (or render a "+3 artifacts" hint).
+_PHASE_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
+    "S0_DONE": ("bid_card",),
+    "S1_DONE": ("triage",),
+    "S1_NO_BID": (),
+    "S2_DONE": ("scoping",),
+    "S3_DONE": ("ba_draft", "sa_draft", "domain_notes"),
+    "S4_DONE": ("convergence",),
+    "S5_DONE": ("hld",),
+    "S6_DONE": ("wbs",),
+    "S7_DONE": ("pricing",),
+    "S8_DONE": ("proposal_package",),
+    "S9_DONE": ("reviews",),
+    "S10_DONE": ("submission",),
+    "S11_DONE": ("retrospective",),
+}
 
 
 @workflow.defn(name="BidWorkflow")
@@ -251,13 +274,13 @@ class BidWorkflow:
     @workflow.run
     async def run(self, wf_input: BidWorkflowInput) -> BidState:
         await self._run_s0(wf_input)
-        await self._snapshot_workspace("S0_DONE")
+        await self._complete_phase("S0_DONE")
         await self._run_s1_triage()
-        await self._snapshot_workspace("S1_DONE")
+        await self._complete_phase("S1_DONE")
 
         gate_ok = await self._wait_human_gate()
         if not gate_ok:
-            await self._snapshot_workspace("S1_NO_BID")
+            await self._complete_phase("S1_NO_BID")
             return self._snapshot()
 
         profile: BidProfile = self._profile or "M"  # type: ignore[assignment]
@@ -271,7 +294,7 @@ class BidWorkflow:
             state = pipeline[idx]
             handler = getattr(self, _STATE_DISPATCH_MAP[state])
             await handler()
-            await self._snapshot_workspace(f"{state}_DONE")
+            await self._complete_phase(f"{state}_DONE")
 
             # Phase 2.4 loop-back: _run_s9_review may set self._state to an
             # earlier pipeline state. Detect + rewind. Phase 2.6 never triggers
@@ -284,7 +307,9 @@ class BidWorkflow:
         if self._state == "S9_BLOCKED":
             return self._snapshot()
         self._state = "S11_DONE"
-        await self._snapshot_workspace("S11_DONE")
+        # Terminal marker only — S11_DONE artifact event already fired when the
+        # loop completed the "S11" phase; skip re-snapshot + re-notify to keep
+        # the event stream free of duplicate terminal ticks.
         return self._snapshot()
 
     # --- S0 / S1 / S2 (Phase 1 logic — kept intact) --------------------------
@@ -720,6 +745,43 @@ class BidWorkflow:
             workflow.logger.warning(
                 "workspace_snapshot.ignored phase=%s err=%s", phase, exc
             )
+
+    async def _notify_state_transition(
+        self, phase: str, artifact_keys: tuple[str, ...]
+    ) -> None:
+        """Phase 2.5 best-effort broadcast that a phase just completed."""
+        if self._bid_card is None:
+            return
+        profile: BidProfile = self._profile or self._bid_card.estimated_profile  # type: ignore[assignment]
+        try:
+            await workflow.execute_activity(
+                state_transition_activity,
+                NotifyStateTransitionInput(
+                    bid_id=str(self._bid_card.bid_id),
+                    state=phase,
+                    profile=profile,
+                    artifact_keys=list(artifact_keys),
+                    occurred_at=workflow.now(),
+                ),
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except Exception as exc:  # noqa: BLE001 — notification is best-effort
+            workflow.logger.warning(
+                "state_transition.notify.failed phase=%s err=%s", phase, exc
+            )
+
+    async def _complete_phase(self, phase: str) -> None:
+        """Run vault snapshot + emit the matching state_completed event.
+
+        Emits events in snapshot-then-notify order so any subscriber re-fetching
+        the bid's workspace artifacts observes read-your-writes (the vault file
+        is already present when the WS event arrives).
+        """
+        await self._snapshot_workspace(phase)
+        await self._notify_state_transition(
+            phase, _PHASE_ARTIFACT_KEYS.get(phase, ())
+        )
 
     def _snapshot(self) -> BidState:
         """Materialise the current snapshot (used by `run` return + NO_BID path)."""

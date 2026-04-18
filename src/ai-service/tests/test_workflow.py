@@ -24,6 +24,7 @@ from activities.review import review_activity
 from activities.sa_analysis import sa_analysis_activity
 from activities.scoping import scoping_activity
 from activities.solution_design import solution_design_activity
+from activities.state_transition import state_transition_activity
 from activities.submission import submission_activity
 from activities.triage import triage_activity
 from activities.wbs import wbs_activity
@@ -68,6 +69,7 @@ _ALL_ACTIVITIES = [
     retrospective_activity,
     workspace_snapshot_activity,
     notify_approval_needed_activity,
+    state_transition_activity,
 ]
 
 _RFP_TEXT = (

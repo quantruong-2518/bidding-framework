@@ -3,19 +3,88 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 2.6 + 2.4 delivery — Conv-4 pair)
+## Last Updated: 2026-04-18 (Phase 2.5 delivery — Conv-5 solo)
 
-## Overall Status: PHASE 2.6 + 2.4 COMPLETE — next pair = Phase 2.5 (SSE/WebSocket agent streaming)
+## Overall Status: PHASE 2 COMPLETE (all 7 sub-tasks) — next = Phase 3 (production hardening)
 
 ## >>> NEXT ACTION <<<
-**Phase 2.5 (solo): real-time agent streaming over SSE + existing socket.io fanout**
+**Phase 3.5 — Langfuse observability (solo).** Detailed plan locked in memory `project_phase_3_5_detailed_plan.md`. Self-hosted Langfuse under Docker `profiles: ["observability"]`; wraps `ClaudeClient.generate` + `generate_stream` via `_CURRENT_LLM_SPAN` ContextVar; `trace_id = str(bid_id)` convention so every activity adds spans to the same trace without workflow-side coordination. **12 locked decisions, 21-step order, ~500 LOC, $0.** Observability-first ordering: instrument BEFORE user turns on real LLM, so first real tokens have full traces.
 
-See memory `project_phase_2_roadmap.md`: depends on Phase 2.2 live-LLM smoke (needs `ANTHROPIC_API_KEY`). If key still absent by Conv-5, swap with Phase 3.5 (Langfuse observability, $0 LLM). Rough scope: wire agent token callbacks → Redis XADD → existing `events.gateway.ts` relay, add `AgentStreamPanel` in frontend.
+**Alternative pair option:** 3.5 + 3.1 (Jinja proposal templates, ~800 LOC) — orthogonal, both $0. Split only if context budget allows.
 
-**Optional intermediate step (live-LLM smoke for 2.2):**
-- Drop `ANTHROPIC_API_KEY` into `src/.env`, `docker compose up --build -d ai-service ai-worker` (rebuild both — see `project_docker_image_split.md`).
-- Run the gated integration test: `pytest -m integration -v` (exercises real BA/SA/Domain agents).
-- Live HTTP smoke: start workflow, approve, query status — `ba_draft.executive_summary` should no longer start with `"Stub BA summary"`.
+**Deferred (external dep):**
+- Live-LLM smoke — needs `ANTHROPIC_API_KEY` in `src/.env`; rebuild both `ai-service` + `ai-worker`; `pytest -m integration -v`; watch `agent_token` events over WS + Langfuse traces (once 3.5 lands).
+- 3.2 Full RBAC — Keycloak realm `bidding` provisioning (`bidding-realm.json` + `--import-realm`).
+- 3.6 K8s migration / 3.7 Load testing — need cluster + traffic profile.
+
+### Phase 2.5 Delivery Summary (2026-04-18, Conv-5 solo)
+**Scope:** real-time agent token streaming + per-phase `state_completed` events + frontend `AgentStreamPanel`. All on the existing Redis pub/sub + socket.io fanout — zero new infra. Deterministic-first: zero `agent_token` publishes when `ANTHROPIC_API_KEY` absent; `state_completed` always fires.
+
+**New files (ai-service):**
+- `agents/stream_publisher.py` — `TokenPublisher` with throttled Redis PUBLISH (150 ms / 200 chars), `stream_context` asynccontextmanager, `_CURRENT_PUBLISHER` ContextVar. Best-effort (swallows Redis errors).
+- `agents/_streaming.py` — `call_llm(client, *, node_name, ...)` helper: dispatches to `generate_stream` when publisher bound, else `generate`. Single-source for BA/SA/Domain node calls.
+- `activities/state_transition.py` — `state_transition_activity` best-effort notify; payload `{type:"state_completed", state, profile, artifact_keys, occurred_at}`.
+- `tests/test_stream_publisher.py` (7 tests), `tests/test_state_transition_activity.py` (3 tests), `tests/test_ba_agent_streaming.py` (4 tests — BA + SA + Domain symmetric coverage + BA fallthrough), `tests/test_workflow_stream_events.py` (2 tests).
+
+**Modified (ai-service):**
+- `tools/claude_client.py` — new `generate_stream(..., on_token)` method using Anthropic `messages.stream`. Existing `generate` untouched. `on_token` errors logged + swallowed.
+- `agents/ba_agent.py`, `agents/sa_agent.py`, `agents/domain_agent.py` — each swapped its 3 `client.generate(...)` call sites (Haiku extract/classify/tag + Sonnet synthesize + Sonnet critique) for `call_llm(..., node_name=...)`. Retrieve node (Qdrant) NOT streamed.
+- `activities/ba_analysis.py`, `activities/sa_analysis.py`, `activities/domain_mining.py` — inside the `if get_claude_settings().api_key` branch, instantiate `TokenPublisher(bid_id, agent, attempt=activity.info().attempt)` + `async with stream_context(pub): ...` + `aclose` in `finally`. Stub-fallback branch unchanged (no publisher, no tokens).
+- `workflows/bid_workflow.py` — new `_PHASE_ARTIFACT_KEYS` declarative map, `_notify_state_transition(phase, keys)` helper (best-effort, 10s timeout, 1 attempt), `_complete_phase(phase)` wrapper (snapshot → notify order for read-your-writes), `run()` swaps every `await self._snapshot_workspace(X)` for `await self._complete_phase(X)`. Removed duplicate terminal `S11_DONE` snapshot (previously fired twice).
+- `worker.py` — registers `state_transition_activity`.
+- `tests/conftest.py` — new autouse fixture `_stub_redis_publish` monkeypatches `aioredis.from_url` across `activities.notify`, `activities.state_transition`, `agents.stream_publisher` so unit tests observe publishes without a real Redis. Exposes `_RedisCapture.events_of_type(t)` helper.
+- `tests/test_workflow.py::_ALL_ACTIVITIES` — adds `state_transition_activity`.
+- `tests/test_claude_client.py` — 3 new tests (stream forwards deltas, no-callback drains, on_token error swallowed).
+
+**New files (frontend):**
+- `components/workflow/agent-stream-panel.tsx` — collapsible panel (BA/SA/Domain label + node label + done/streaming badge + typewriter pre block). Renders idle state when stream is null.
+- `__tests__/use-bid-events-stream.test.ts` (9 tests: 5 `applyToken` pure-function + 4 hook scenarios including 150 ms throttle, state_transitions buffering, bid-id switch reset, backwards-compat with `approval_needed`).
+- `__tests__/agent-stream-panel.test.tsx` (3 tests).
+
+**Modified (frontend):**
+- `lib/ws/use-bid-events.ts` — extended `BidEventState` with `agentStreams: Record<AgentName, AgentStreamState | null>` + `stateTransitions: StateCompletedEvent[]`. Ref-based buffer + 150 ms throttled setState (`FLUSH_INTERVAL_MS`). Pure `applyToken` function handles attempt-dedup + node-reset + out-of-order seq drop. Transitions capped at 50. Buffer resets on bid-id change.
+- `components/workflow/state-detail.tsx` — props extend with `agentStreams`; when `currentState === 'S3'` and selected is S3a/b/c, renders `<AgentStreamPanel>` above the existing artifact panel.
+- `app/(authed)/bids/[id]/page.tsx` — pipes `agentStreams` from `useBidEvents` into `<StateDetail>`.
+
+**NO CHANGES (by design, per D1):**
+- `api-gateway/src/gateway/events.gateway.ts` — existing `relayToRoom` already fans out any Redis payload verbatim; new event types ride the same channel + same `bid.event` WS message.
+- `api-gateway/src/redis/redis.service.ts` — no new methods needed.
+
+**Contract tables (Redis payloads on `bid.events.channel.{bid_id}`):**
+
+| type | fields |
+|---|---|
+| `agent_token` (new) | `agent ∈ {ba,sa,domain}`, `node`, `attempt`, `seq`, `text_delta`, `done` |
+| `state_completed` (new) | `state` (e.g. `"S4_DONE"`), `profile`, `artifact_keys: string[]`, `occurred_at` ISO8601 |
+| `approval_needed` (unchanged, Phase 2.4) | `state`, `workflow_id`, `round`, `reviewer_index`, `reviewer_count`, `profile` |
+
+**Tests at delivery:** **97/97 pytest** (78 pre-existing + 7 publisher + 3 state_transition + 2 workflow events + 3 claude streaming + 4 agent streaming: BA+SA+Domain symmetric + fallthrough); 1 integration test correctly deselected. **17/17 Jest** (NestJS untouched). **41/41 vitest** (29 pre + 9 hook streaming + 3 panel). `tsc --noEmit` clean; `next build` succeeds.
+
+**Live smoke:** NOT yet run in this conversation — Docker daemon not accessible. Runbook (carry forward to next conv):
+```bash
+# Rebuild BOTH images (per project_docker_image_split.md)
+cd src && docker compose up -d --build ai-service ai-worker
+docker compose restart ai-worker
+
+# Without key — expect state_completed events, zero agent_token
+curl -X POST http://localhost:8001/workflows/bid/start-from-card -H 'Content-Type: application/json' -d '{...}' | jq .workflow_id
+# approve triage + review signals, watch `docker exec bid-redis redis-cli PSUBSCRIBE 'bid.events.channel.*'`
+# Should see ~12 state_completed payloads (Bid-M); 0 agent_token.
+
+# With key — expect both
+# add ANTHROPIC_API_KEY to src/.env → docker compose up --build -d ai-service ai-worker
+# Same start + signal flow; expect bursts of agent_token events during S3.
+# Run the gated integration test:
+docker run --rm --network bid-framework_default -v "$PWD/ai-service/tests:/app/tests:ro" \
+  -e ANTHROPIC_API_KEY=... bid-framework-ai-service sh -c "pip install -q pytest pytest-asyncio && pytest -m integration -v"
+```
+
+**Known gaps carried to Phase 3:**
+- SSE endpoint parity (deferred — socket.io already carries both streams; add SSE only if a non-browser consumer needs it).
+- Token persistence via Redis XADD + MAXLEN (for late subscribers) — Phase 3.3 audit dashboard will want historical token streams.
+- Langfuse trace around `generate_stream` — Phase 3.5.
+- Per-tenant isolation before re-surfacing `kb-vault/bids/` in RAG — Phase 3 (multi-tenant tag contract).
+- Frontend panel doesn't yet render `stateTransitions` as a live activity feed (buffer is populated but no UI consumer) — trivial to add in Phase 3 audit dashboard.
 
 ### Phase 2.6 + 2.4 Delivery Summary (2026-04-18, Conv-4 pair)
 **Scope:** declarative profile pipeline (2.6) + real S9 human review gate with signal + loop-back + multi-round cap + WebSocket notification (2.4).
@@ -225,7 +294,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | 2.3 | Document parsing pipeline | DONE (pypdf MVP) | PDF + DOCX → ParsedRFP + BidCard suggestion. pypdf + python-docx (no Unstructured.io container); gateway proxy + frontend drop-zone; 13 new pytest + 3 new Jest |
 | 2.7 | Bid workspace in Obsidian | DONE | Flat `kb-vault/bids/{bid_id}/NN-*.md` layout; `workspace_snapshot_activity` after each phase; 15 render funcs with `kind: bid_output` frontmatter; best-effort (never blocks bid). Re-ingestion deferred to Phase 3 |
 | 2.4 | Human approval flow (Temporal signals) | DONE | Real S9 gate: `human_review_decision` signal, sequential multi-reviewer, earliest-target loop-back with artifact cleanup, 3-round cap → S9_BLOCKED; `notify_approval_needed_activity` WS broadcast |
-| 2.5 | Real-time updates (SSE + WebSocket) | NOT STARTED | Redis + socket.io scaffold in place; needs agent-stream integration |
+| 2.5 | Real-time updates (SSE + WebSocket) | DONE | `TokenPublisher` (throttle 150 ms / 200 chars) + `stream_context` ContextVar → agents route through `ClaudeClient.generate_stream`; `state_transition_activity` after each phase. Frontend `AgentStreamPanel` + extended `useBidEvents`. 97 pytest, 41 vitest. |
 | 2.6 | Bid Profile routing (S/M/L/XL) | DONE | `_PROFILE_PIPELINE` matrix; Bid-S skips S5/S7; assembly null-guards; XL logs parity-pending |
 
 ## Phase 3: Production Ready (Weeks 9-12)

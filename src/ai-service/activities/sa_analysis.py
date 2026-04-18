@@ -11,6 +11,7 @@ import logging
 from temporalio import activity
 
 from agents.sa_agent import run_sa_agent
+from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
 from workflows.artifacts import SolutionArchitectureDraft, StreamInput
 
@@ -34,7 +35,16 @@ async def sa_analysis_activity(req: StreamInput) -> SolutionArchitectureDraft:
     )
     activity.heartbeat("sa_agent_started")
 
-    draft = await run_sa_agent(req)
+    publisher = TokenPublisher(
+        bid_id=str(req.bid_id),
+        agent="sa",
+        attempt=activity.info().attempt,
+    )
+    try:
+        async with stream_context(publisher):
+            draft = await run_sa_agent(req)
+    finally:
+        await publisher.aclose()
 
     activity.heartbeat("sa_agent_completed")
     activity.logger.info(

@@ -24,6 +24,7 @@ from activities.review import review_activity
 from activities.sa_analysis import sa_analysis_activity
 from activities.scoping import scoping_activity
 from activities.solution_design import solution_design_activity
+from activities.state_transition import state_transition_activity
 from activities.submission import submission_activity
 from activities.triage import triage_activity
 from activities.wbs import wbs_activity
@@ -81,6 +82,8 @@ async def _run() -> None:
             workspace_snapshot_activity,
             # Phase 2.4 — approval_needed notification for the S9 gate.
             notify_approval_needed_activity,
+            # Phase 2.5 — state_completed notification after each phase.
+            state_transition_activity,
         ],
     )
 

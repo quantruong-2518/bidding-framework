@@ -13,6 +13,7 @@ from temporalio import activity
 
 from agents.ba_agent import run_ba_agent
 from agents.models import BusinessRequirementsDraft
+from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
 from workflows.artifacts import StreamInput
 
@@ -36,7 +37,19 @@ async def ba_analysis_activity(req: StreamInput) -> BusinessRequirementsDraft:
     )
     activity.heartbeat("ba_agent_started")
 
-    draft = await run_ba_agent(req)
+    # Phase 2.5 — bind a throttled Redis publisher so LLM deltas fan out to
+    # the frontend AgentStreamPanel. Activity retry re-emits with a new
+    # `attempt_number` so the frontend can de-dupe stale attempts.
+    publisher = TokenPublisher(
+        bid_id=str(req.bid_id),
+        agent="ba",
+        attempt=activity.info().attempt,
+    )
+    try:
+        async with stream_context(publisher):
+            draft = await run_ba_agent(req)
+    finally:
+        await publisher.aclose()
 
     activity.heartbeat("ba_agent_completed")
     activity.logger.info(

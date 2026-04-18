@@ -7,14 +7,30 @@ import {
   nodeKindToState,
 } from '@/lib/utils/state-palette';
 import type { WorkflowStatus } from '@/lib/api/types';
+import type {
+  AgentName,
+  AgentStreamState,
+} from '@/lib/ws/use-bid-events';
+import { AgentStreamPanel } from '@/components/workflow/agent-stream-panel';
 
 interface StateDetailProps {
   selected: NodeKind | null;
   status?: WorkflowStatus;
+  agentStreams?: Record<AgentName, AgentStreamState | null>;
 }
 
+const NODE_KIND_TO_AGENT: Partial<Record<NodeKind, AgentName>> = {
+  S3a: 'ba',
+  S3b: 'sa',
+  S3c: 'domain',
+};
+
 /** Right-pane info box shown next to the workflow graph. */
-export function StateDetail({ selected, status }: StateDetailProps): React.ReactElement {
+export function StateDetail({
+  selected,
+  status,
+  agentStreams,
+}: StateDetailProps): React.ReactElement {
   if (!selected) {
     return (
       <Card>
@@ -30,6 +46,10 @@ export function StateDetail({ selected, status }: StateDetailProps): React.React
   }
 
   const meta = STATE_PALETTE[nodeKindToState(selected)];
+  const streamAgent = NODE_KIND_TO_AGENT[selected];
+  const currentState = status?.current_state ?? status?.state;
+  const showStream =
+    streamAgent !== undefined && currentState === 'S3' && agentStreams;
 
   return (
     <Card>
@@ -43,6 +63,12 @@ export function StateDetail({ selected, status }: StateDetailProps): React.React
         <p className="text-sm text-muted-foreground">{meta.description}</p>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
+        {showStream && streamAgent && (
+          <AgentStreamPanel
+            agent={streamAgent}
+            stream={agentStreams[streamAgent]}
+          />
+        )}
         <ArtifactPanel selected={selected} status={status} />
       </CardContent>
     </Card>

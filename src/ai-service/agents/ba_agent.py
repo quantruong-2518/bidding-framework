@@ -15,6 +15,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from agents._streaming import call_llm
 from agents.models import (
     BusinessRequirementsDraft,
     FunctionalRequirement,
@@ -96,10 +97,12 @@ async def extract_requirements(state: BAState) -> BAState:
     )
     client = _get_client()
     try:
-        response = await client.generate(
+        response = await call_llm(
+            client,
             model=HAIKU,
             system=SYSTEM_PROMPT_EXTRACT,
             messages=[{"role": "user", "content": user_payload}],
+            node_name="extract_requirements",
             max_tokens=1024,
             temperature=0.0,
         )
@@ -190,10 +193,12 @@ async def synthesize_draft(state: BAState) -> BAState:
     last_error: str | None = None
     for attempt in range(2):
         try:
-            response = await client.generate(
+            response = await call_llm(
+                client,
                 model=SONNET,
                 system=SYSTEM_PROMPT_SYNTHESIZE,
                 messages=messages,
+                node_name="synthesize_draft",
                 max_tokens=4096,
                 temperature=0.2,
             )
@@ -245,10 +250,12 @@ async def self_critique(state: BAState) -> BAState:
         ensure_ascii=False,
     )
     try:
-        response = await client.generate(
+        response = await call_llm(
+            client,
             model=SONNET,
             system=SYSTEM_PROMPT_REVIEW,
             messages=[{"role": "user", "content": user_payload}],
+            node_name="self_critique",
             max_tokens=1024,
             temperature=0.0,
         )
