@@ -334,14 +334,19 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 - [ ] Existing KB data ở đâu? Format gì?
 - [ ] Team size cho Phase 1 development?
 
-## Known Gaps Carried Into Phase 2.2+
+## Known Gaps Carried Into Phase 3
 
-- Keycloak realm `bidding` not yet provisioned — `docker-compose.yml` runs `start-dev` without `--import-realm`; add `bidding-realm.json` and `--import-realm` flag before wiring real auth end-to-end
-- `ba_analysis_activity` implemented but **not registered** in `worker.py` (by design — Phase 2.2 swaps the stream stub for this real activity once `ANTHROPIC_API_KEY` is set)
-- Api-gateway Jest default `rootDir=src` only discovers `src/**/*.spec.ts`; run `npm run test:e2e` (or move specs under `src/`) to include `test/*.spec.ts`
-- Postgres persistence for bids uses an in-memory Map in `bids.service.ts` — swap for TypeORM/Prisma in Phase 2. `bidding_db` is empty (0 tables) — no migration yet.
-- CORS defaults to `*` when `CORS_ORIGIN` unset — tighten before any shared-environment deploy
-- ai-service `Dockerfile` `.dockerignore` excludes `tests/` — pytest must run via bind-mount (`docker run --rm -v "$PWD/tests:/app/tests:ro" ...`) rather than `docker exec`. Consider a separate `Dockerfile.test` target in Phase 2.
-- ANTHROPIC_API_KEY not wired from `.env` by default — `src/.env` not created by compose. Copy `.env.example` → `.env` and set the key before running any LLM-dependent flow (real BA/SA agents, Cohere rerank). S0–S11 currently run on deterministic stubs and need no key.
-- **Frontend/Python Triage shape mismatch (pre-existing, unchanged in 2.1):** frontend `Triage.recommend` ('bid' | 'no-bid') + `confidence` does not match Python's `TriageDecision.recommendation` ('BID' | 'NO_BID') + `overall_score`. UI shows "pending" for real triage output. Fix in Phase 2.4 (human approval flow revisit).
-- **ai-worker uses a separate Docker image tag (`bid-framework-ai-worker`)** — when iterating on workflow/activity code, rebuild BOTH `ai-service` AND `ai-worker` images, then force-recreate the worker container. Missing this step was the #1 debug blocker during 2.1 (worker silently runs stale workflow bytecode).
+Audited + pruned 2026-04-18 after Phase 2 closure. Stale entries removed:
+~~`ba_analysis_activity` not registered~~ (registered since Phase 2.2);
+~~Triage shape mismatch~~ (closed as part of Phase 2 audit — frontend `Triage`
+now matches Python `TriageDecision`).
+
+- **Keycloak realm `bidding` not provisioned** — `docker-compose.yml` runs `start-dev` without `--import-realm`; add `bidding-realm.json` and `--import-realm` flag before wiring real auth end-to-end. Phase 3.2 owns.
+- **Api-gateway Jest `rootDir=src` only discovers `src/**/*.spec.ts`** — run `npm run test:e2e` (or move specs under `src/`) to include `test/*.spec.ts`. Unchanged convention; documented.
+- **Postgres persistence for bids uses an in-memory Map** in `bids.service.ts` — swap for TypeORM/Prisma in Phase 3. `bidding_db` is empty (0 tables) — no migration yet.
+- **CORS defaults to `*`** when `CORS_ORIGIN` unset — tighten before any shared-environment deploy.
+- **ai-service `Dockerfile` `.dockerignore` excludes `tests/`** — pytest must run via bind-mount (`docker run --rm -v "$PWD/tests:/app/tests:ro" ...`) rather than `docker exec`. Consider a separate `Dockerfile.test` target in Phase 3.
+- **`ANTHROPIC_API_KEY` not wired from `.env` by default** — `src/.env` not created by compose. Copy `.env.example` → `.env` and set the key before running any LLM-dependent flow (real BA/SA/Domain agents, Cohere rerank, Phase 2.5 token streams). S0–S11 run on deterministic stubs + fallback gate, need no key.
+- **`ai-worker` uses a separate Docker image tag** (`bid-framework-ai-worker`) — when iterating on workflow/activity code, rebuild BOTH `ai-service` AND `ai-worker` images, then force-recreate the worker container. Runbook: see `memory/project_docker_image_split.md`. Was the #1 debug blocker in 2.1; recurred in 2.4/2.5 deliveries.
+- **`kb-vault/bids/` NOT re-ingested into Qdrant** (Phase 2.7 carry-forward) — multi-tenant isolation required before prior-bid content surfaces to new-bid RAG. Phase 3 owns.
+- **Live-LLM smoke for Phase 2.2 + 2.5 not yet run** — stub path is default; set `ANTHROPIC_API_KEY`, rebuild both images, run `pytest -m integration -v`. `ba_draft.executive_summary` no longer starts with `"Stub BA summary"` when live.

@@ -160,10 +160,10 @@ function TriagePanel({ status }: { status?: WorkflowStatus }): React.ReactElemen
   return (
     <div className="space-y-2">
       <p>
-        Recommendation: <strong>{t.recommend ?? 'pending'}</strong>
-        {typeof t.confidence === 'number' && (
+        Recommendation: <strong>{t.recommendation ?? 'pending'}</strong>
+        {typeof t.overall_score === 'number' && (
           <span className="ml-2 text-muted-foreground">
-            ({Math.round(t.confidence * 100)}% confidence)
+            ({Math.round(t.overall_score)}/100)
           </span>
         )}
       </p>

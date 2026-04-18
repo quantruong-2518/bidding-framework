@@ -48,34 +48,40 @@ export function TriageReviewPanel({ bidId, triage }: TriageReviewPanelProps): Re
   const onApprove = handleSubmit((v) => submit(true, v));
   const onReject = handleSubmit((v) => submit(false, v));
 
-  const recommendation = triage?.recommend ?? 'bid';
-  const confidencePct =
-    typeof triage?.confidence === 'number' ? Math.round(triage.confidence * 100) : null;
+  const recommendation = triage?.recommendation ?? 'BID';
+  const overallScore =
+    typeof triage?.overall_score === 'number' ? Math.round(triage.overall_score) : null;
+  const breakdown = triage?.score_breakdown
+    ? Object.entries(triage.score_breakdown)
+    : [];
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
           <CardTitle>Triage review</CardTitle>
-          <Badge variant={recommendation === 'bid' ? 'success' : 'destructive'}>
+          <Badge variant={recommendation === 'BID' ? 'success' : 'destructive'}>
             Recommend: {recommendation}
           </Badge>
         </div>
-        {confidencePct != null && (
+        {overallScore != null && (
           <p className="text-xs text-muted-foreground">
-            Model confidence: <strong>{confidencePct}%</strong>
+            Overall score: <strong>{overallScore}/100</strong>
           </p>
         )}
       </CardHeader>
       <CardContent className="space-y-4">
-        {triage?.scores && triage.scores.length > 0 && (
+        {breakdown.length > 0 && (
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase text-muted-foreground">Scores</p>
+            <p className="text-xs font-semibold uppercase text-muted-foreground">Score breakdown</p>
             <ul className="divide-y divide-border rounded-md border border-border">
-              {triage.scores.map((score, i) => (
-                <li key={`${score.label}-${i}`} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <span>{score.label ?? `Criterion ${i + 1}`}</span>
-                  <span className="font-mono">{score.score ?? '—'}</span>
+              {breakdown.map(([label, score]) => (
+                <li
+                  key={label}
+                  className="flex items-center justify-between px-3 py-2 text-sm"
+                >
+                  <span>{label}</span>
+                  <span className="font-mono">{typeof score === 'number' ? score.toFixed(2) : '—'}</span>
                 </li>
               ))}
             </ul>

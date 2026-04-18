@@ -116,20 +116,18 @@ export interface BidCard {
   requirements_raw?: string[];
 }
 
-export interface TriageScore {
-  label?: string;
-  score?: number;
-  notes?: string;
-}
-
+/**
+ * Matches Python `workflows.models.TriageDecision` emitted by S1.
+ *
+ * `overall_score` is 0–100; `score_breakdown` holds per-criterion sub-scores
+ * (typically 0–1). The review signal (`approved`, `reviewer`, `notes`) is a
+ * separate payload the frontend sends — not part of this read-only artifact.
+ */
 export interface Triage {
-  recommend?: 'bid' | 'no-bid';
-  confidence?: number;
-  scores?: TriageScore[];
+  recommendation?: 'BID' | 'NO_BID';
+  overall_score?: number;
+  score_breakdown?: Record<string, number>;
   rationale?: string;
-  approved?: boolean;
-  reviewer?: string;
-  notes?: string;
 }
 
 export interface ScopingWorkstream {

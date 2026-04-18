@@ -122,7 +122,7 @@ frontend/
 - `NEXT_PUBLIC_WS_URL` can be `http://…` — socket.io-client upgrades to WebSocket automatically. Match the NestJS origin.
 - Build uses `output: 'standalone'` for Docker — keep `public/` existing (can be empty).
 - Dark mode is driven by `.dark` on `<html>`; no toggle yet.
-- Pre-existing triage shape mismatch: `types.ts::Triage` uses `recommend: 'bid' | 'no-bid'` + `confidence`, but Python emits `recommendation: 'BID' | 'NO_BID'` + `overall_score`. The UI reads `triage.recommend` so it displays "pending" for real payloads. Phase 2.4 revisit — fix the interface to match Python, or add a NestJS-side transform.
+- `Triage` interface in `lib/api/types.ts` matches Python `TriageDecision` (`recommendation: 'BID' | 'NO_BID'` + `overall_score: 0-100` + `score_breakdown: Record<string, number>` + `rationale`). Closed the Phase 2.1 shape mismatch in the Phase 2 closure audit (2026-04-18). The reviewer panel + `state-detail.tsx::TriagePanel` render those fields directly.
 - `workflow-graph.tsx::mainOrderForCompare` MUST include every terminal literal (`S2_DONE`, `S11_DONE`, `S1_NO_BID`) the workflow can settle on, otherwise `currentIdx = -1` and every node renders as `pending`. Add new terminals there when they ship.
 
 ## Pointers
