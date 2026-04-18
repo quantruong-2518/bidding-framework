@@ -79,3 +79,14 @@ export function getWorkflowArtifact<T>(
     `/bids/${encodeURIComponent(id)}/workflow/artifacts/${encodeURIComponent(type)}`,
   );
 }
+
+/**
+ * Phase 3.5 — fetch the Langfuse trace URL for a bid. 404 when the
+ * observability stack isn't configured (LANGFUSE_WEB_URL unset on the
+ * gateway); callers should hide the link in that case.
+ */
+export function getBidTraceUrl(id: string): Promise<{ url: string }> {
+  return apiFetch<{ url: string }>(
+    `/bids/${encodeURIComponent(id)}/trace-url`,
+  );
+}

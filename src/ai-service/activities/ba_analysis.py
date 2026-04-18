@@ -15,6 +15,7 @@ from agents.ba_agent import run_ba_agent
 from agents.models import BusinessRequirementsDraft
 from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
+from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import StreamInput
 
 logger = logging.getLogger(__name__)
@@ -45,11 +46,21 @@ async def ba_analysis_activity(req: StreamInput) -> BusinessRequirementsDraft:
         agent="ba",
         attempt=activity.info().attempt,
     )
+    # Phase 3.5 — open a Langfuse span so every LLM call under the BA graph
+    # is attached to `trace_id=str(bid_id)`. Noop when LANGFUSE_SECRET_KEY unset.
+    tracer = get_tracer()
+    span = tracer.start_span(
+        trace_id=str(req.bid_id),
+        name="ba_analysis",
+        metadata={"attempt": activity.info().attempt, "agent": "ba"},
+    )
     try:
-        async with stream_context(publisher):
+        async with langfuse_span_context(span), stream_context(publisher):
             draft = await run_ba_agent(req)
     finally:
         await publisher.aclose()
+        span.end()
+        await tracer.aclose()
 
     activity.heartbeat("ba_agent_completed")
     activity.logger.info(

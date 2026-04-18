@@ -1,6 +1,8 @@
+import { NotFoundException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { BidsController } from '../src/bids/bids.controller';
 import { BidsService } from '../src/bids/bids.service';
+import { LangfuseLinkService } from '../src/bids/langfuse-link.service';
 import { BidProfile, BidStatus, type Bid } from '../src/bids/bid.entity';
 import type { CreateBidDto } from '../src/bids/create-bid.dto';
 import type { UpdateBidDto } from '../src/bids/update-bid.dto';
@@ -9,6 +11,7 @@ import type { AuthenticatedUser } from '../src/auth/current-user.decorator';
 describe('BidsController', () => {
   let controller: BidsController;
   let service: jest.Mocked<BidsService>;
+  let langfuseLink: jest.Mocked<LangfuseLinkService>;
 
   const fixture: Bid = {
     id: '00000000-0000-0000-0000-000000000001',
@@ -34,13 +37,21 @@ describe('BidsController', () => {
       remove: jest.fn(),
     };
 
+    const linkMock: Partial<jest.Mocked<LangfuseLinkService>> = {
+      getTraceUrl: jest.fn(),
+    };
+
     const moduleRef: TestingModule = await Test.createTestingModule({
       controllers: [BidsController],
-      providers: [{ provide: BidsService, useValue: mock }],
+      providers: [
+        { provide: BidsService, useValue: mock },
+        { provide: LangfuseLinkService, useValue: linkMock },
+      ],
     }).compile();
 
     controller = moduleRef.get(BidsController);
     service = moduleRef.get(BidsService) as jest.Mocked<BidsService>;
+    langfuseLink = moduleRef.get(LangfuseLinkService) as jest.Mocked<LangfuseLinkService>;
   });
 
   it('creates a bid with current user as creator', async () => {
@@ -81,5 +92,22 @@ describe('BidsController', () => {
   it('removes a bid', () => {
     controller.remove(fixture.id);
     expect(service.remove).toHaveBeenCalledWith(fixture.id);
+  });
+
+  it('returns Langfuse trace URL for a bid', () => {
+    langfuseLink.getTraceUrl.mockReturnValue({
+      url: `http://localhost:3002/trace/${fixture.id}`,
+    });
+    expect(controller.getTraceUrl(fixture.id)).toEqual({
+      url: `http://localhost:3002/trace/${fixture.id}`,
+    });
+    expect(langfuseLink.getTraceUrl).toHaveBeenCalledWith(fixture.id);
+  });
+
+  it('propagates 404 when Langfuse is not configured', () => {
+    langfuseLink.getTraceUrl.mockImplementation(() => {
+      throw new NotFoundException('unset');
+    });
+    expect(() => controller.getTraceUrl(fixture.id)).toThrow(NotFoundException);
   });
 });

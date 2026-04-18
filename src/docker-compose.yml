@@ -139,6 +139,9 @@ services:
       REDIS_URL: redis://redis:6379
       AI_SERVICE_URL: http://ai-service:8001
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
+      # Phase 3.5 — browser-facing Langfuse URL; 404 from /bids/:id/trace-url
+      # when unset (frontend hides the button).
+      LANGFUSE_WEB_URL: ${LANGFUSE_WEB_URL:-}
     ports:
       - "3000:3000"
     healthcheck:
@@ -170,6 +173,12 @@ services:
       REDIS_URL: redis://redis:6379
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
       KB_VAULT_PATH: /kb-vault
+      # Phase 3.5 — Langfuse observability. Keys unset by default: tracer
+      # resolves to the no-op path and emits zero HTTP traffic.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      LANGFUSE_RELEASE: ${LANGFUSE_RELEASE:-phase-3.5}
     volumes:
       # Main vault stays read-only so SME-authored notes can't be mutated by
       # the pipeline. The per-bid workspace (Phase 2.7) needs to write — shadow
@@ -211,6 +220,12 @@ services:
       REDIS_URL: redis://redis:6379
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
       KB_VAULT_PATH: /kb-vault
+      # Phase 3.5 — Langfuse observability (ai-worker is where S3 activities
+      # run, so it carries the keys too). No-op when unset.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      LANGFUSE_RELEASE: ${LANGFUSE_RELEASE:-phase-3.5}
     volumes:
       # Main vault stays read-only so SME-authored notes can't be mutated by
       # the pipeline. The per-bid workspace (Phase 2.7) needs to write — shadow
@@ -242,6 +257,59 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 30s
+
+  # Phase 3.5 — self-hosted Langfuse observability.
+  # Default `docker compose up -d` skips these; start with
+  # `docker compose --profile observability up -d langfuse-db-init langfuse-server`.
+  # First run: open http://localhost:3002, create admin user + project,
+  # copy public + secret keys into `.env`, then rebuild ai-service + ai-worker.
+  langfuse-db-init:
+    image: postgres:16-alpine
+    container_name: bid-langfuse-db-init
+    profiles: ["observability"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: bidding
+      PGPASSWORD: bidding
+      PGDATABASE: bidding_db
+    # Idempotent create of the langfuse database — the container exits 0 on
+    # subsequent runs because `SELECT 1 FROM pg_database WHERE datname='langfuse_db'`
+    # short-circuits the CREATE. Reuses existing postgres (D9: no extra container).
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        psql -tAc "SELECT 1 FROM pg_database WHERE datname='langfuse_db'" | grep -q 1 \
+          || psql -c "CREATE DATABASE langfuse_db"
+    restart: "no"
+
+  langfuse-server:
+    image: langfuse/langfuse:2.59
+    container_name: bid-langfuse-server
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langfuse-db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://bidding:bidding@postgres:5432/langfuse_db
+      NEXTAUTH_URL: http://localhost:3002
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-change-me-please-32-chars-minimum-xxxxxx}
+      SALT: ${LANGFUSE_SALT:-change-me-please-salt-32-chars-xxxxxxxx}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_INIT_PROJECT_NAME: bidding-framework
+    ports:
+      - "3002:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/public/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
       start_period: 30s
 
 volumes:

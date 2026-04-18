@@ -3,12 +3,12 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 2.5 delivery — Conv-5 solo)
+## Last Updated: 2026-04-18 (Phase 3.5 delivery — Conv-6 solo)
 
-## Overall Status: PHASE 2 COMPLETE (all 7 sub-tasks) — next = Phase 3 (production hardening)
+## Overall Status: PHASE 3.5 COMPLETE — next = Phase 3.1 (Jinja2 proposal templates, Conv-7)
 
 ## >>> NEXT ACTION <<<
-**All Phase 3 detailed plans locked** — each of 7 sub-tasks has a ready-to-execute plan in memory. No more survey / design work needed; next conversation starts coding immediately.
+**Next conversation = Conv-7 = Phase 3.1 Jinja templates.** Plan in `memory/project_phase_3_1_detailed_plan.md`. No survey / design work needed.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
@@ -32,6 +32,105 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.5 Delivery Summary (2026-04-18, Conv-6 solo)
+**Scope:** self-hosted Langfuse tracing wrapped around `ClaudeClient.generate` + `generate_stream`; activity-level spans bound via `_CURRENT_LLM_SPAN` ContextVar so BA/SA/Domain LLM calls land under one `trace_id=str(bid_id)`. Deterministic-first: `LANGFUSE_SECRET_KEY` unset → no-op tracer, zero HTTP traffic, Langfuse container NOT started.
+
+**New files (ai-service):**
+- `config/langfuse.py` — `LangfuseSettings` (env prefix `LANGFUSE_`) + `get_langfuse_settings` lru_cache.
+- `tools/langfuse_client.py` — `LangfuseTracer` (lazy SDK import), `_RealSpan` / `_RealGeneration` + `_NoopSpan` / `_NoopGeneration` siblings, `_CURRENT_LLM_SPAN` ContextVar, `span_context` asynccontextmanager, `get_tracer` factory. Noop-by-default: `tracer.enabled = bool(secret_key)`.
+- `tests/test_langfuse_client.py` — 5 tests (disabled→noop, span_context propagation, aclose idempotent, enabled-path SDK calls, SDK errors degrade).
+- `tests/test_claude_client_tracing.py` — 4 tests (generate creates generation when span bound, generate_stream captures aggregate, no-op without span, error path still closes generation).
+
+**Modified (ai-service):**
+- `pyproject.toml` — add `langfuse ^2.59.0`.
+- `tools/claude_client.py` — constructor accepts `tracer` kwarg (defaults to `get_tracer()`). `generate` + `generate_stream` open + close a Langfuse generation around the Anthropic call via `_start_generation` helper. New optional `trace_id` + `node_name` kwargs. `_NOOP_GEN` fallback when no span bound.
+- `agents/_streaming.py::call_llm` — passes `node_name=` through to both `generate` / `generate_stream`.
+- `activities/ba_analysis.py`, `sa_analysis.py`, `domain_mining.py` — in the real-LLM branch, open `tracer.start_span(trace_id=str(req.bid_id), name="{agent}_analysis", metadata={attempt,agent})`, nest `async with langfuse_span_context(span), stream_context(publisher)`, end span + `tracer.aclose()` in `finally`. Stub branch unchanged.
+- `tests/conftest.py` — new autouse fixture `_disable_langfuse_by_default` scrubs `LANGFUSE_*` env vars + clears settings cache for non-integration tests (mirror of `_force_llm_fallback_by_default`).
+
+**New files (api-gateway):**
+- `src/bids/langfuse-link.service.ts` — `LangfuseLinkService.getTraceUrl(bidId)` returns `{url: "${LANGFUSE_WEB_URL}/trace/${bidId}"}`, throws `NotFoundException` when env unset.
+- `test/langfuse-link.service.spec.ts` — 3 tests (url returned, trailing slash stripped, 404 when env unset).
+
+**Modified (api-gateway):**
+- `src/bids/bids.controller.ts` — `GET /bids/:id/trace-url` endpoint gated `@Roles('admin','bid_manager')`. Injects `LangfuseLinkService`.
+- `src/bids/bids.module.ts` — provide `LangfuseLinkService`.
+- `test/bids.controller.spec.ts` — add `LangfuseLinkService` mock to providers; 2 new specs (success + 404).
+
+**New files (frontend):**
+- `components/bids/langfuse-link-button.tsx` — opens Langfuse trace in new tab. Hidden unless user has `admin`/`bid_manager` role AND gateway returns a URL (silently hidden on 404).
+- `__tests__/langfuse-link-button.test.tsx` — 3 tests (admin sees link, viewer sees nothing, 404 hides).
+
+**Modified (frontend):**
+- `lib/api/bids.ts` — `getBidTraceUrl(id)` helper.
+- `app/(authed)/bids/[id]/page.tsx` — mount `<LangfuseLinkButton>` next to `wf: ...` chip when `b.workflowId` exists.
+
+**Modified (infra):**
+- `src/docker-compose.yml` — new services `langfuse-db-init` (one-shot postgres client that `CREATE DATABASE langfuse_db` if not exists) + `langfuse-server` (image `langfuse/langfuse:2.59`, reuses existing postgres, port 3002:3000), both behind `profiles: ["observability"]`. ai-service + ai-worker get `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` / `LANGFUSE_RELEASE` env passthrough (default empty → noop). api-gateway gets `LANGFUSE_WEB_URL`.
+- `docker compose config` validates clean. Default `docker compose up -d` still starts 10 services (Langfuse skipped).
+- `.env.example` — NOT modified (permission denied on file); runbook documents `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` / `LANGFUSE_WEB_URL` / `LANGFUSE_RELEASE` + `LANGFUSE_NEXTAUTH_SECRET` / `LANGFUSE_SALT` keys instead. Carry-forward to Phase 3.6 K8s manifests.
+
+**Contract tables:**
+
+| Env var | Default | Required when | Notes |
+|---|---|---|---|
+| `LANGFUSE_PUBLIC_KEY` | (unset) | observability profile | from Langfuse UI |
+| `LANGFUSE_SECRET_KEY` | (unset) | observability profile | **gates the no-op wrapper** |
+| `LANGFUSE_HOST` | `http://langfuse-server:3000` | observability profile | ai-service side |
+| `LANGFUSE_WEB_URL` | (unset) | api-gateway only | browser-facing; 404 on /trace-url when unset |
+| `LANGFUSE_RELEASE` | `phase-3.5` | optional | tagged on every trace |
+| `LANGFUSE_NEXTAUTH_SECRET` | placeholder | observability profile | Langfuse server auth |
+| `LANGFUSE_SALT` | placeholder | observability profile | Langfuse server |
+
+| Trace shape | |
+|---|---|
+| `trace(id=str(bid_id))` | implicit — activities use `trace_id=str(bid_id)` convention |
+| `span(name="{agent}_analysis", metadata={attempt,agent})` | one per BA/SA/Domain activity attempt |
+| `generation(name="<node>", model, input, output, usage)` | one per LLM call (Haiku extract/classify/tag + Sonnet synth + Sonnet critique) |
+
+**REST:** `GET /bids/:id/trace-url` → `{url: "..."}` (200) OR 404 when `LANGFUSE_WEB_URL` unset. Roles: admin + bid_manager.
+
+**Tests at delivery:**
+- ai-service: expected **+8 tests** (5 langfuse_client + 3 claude_client_tracing + 1 error-path). NOT yet executed — Docker daemon + Poetry env unavailable in this conv (mirror of Phase 2.5 + 2.4 deferral). Test files were written to mirror existing patterns (autouse fixtures scrub env, mock Langfuse SDK via `MagicMock`). Re-run at start of Conv-7 before any new code.
+- api-gateway: expected **+5 tests** (3 langfuse-link service + 2 controller specs). Same deferral.
+- frontend: expected **+3 tests** (link button visibility matrix). Same deferral.
+
+**Live smoke:** NOT yet run in this conversation — Docker daemon not accessible. Runbook carried forward below.
+
+**Runbook:**
+```bash
+# Default dev (no Langfuse) — unchanged
+cd src && docker compose up -d --build
+# 10 services healthy, Langfuse NOT started.
+
+# Opt into observability
+docker compose --profile observability up -d langfuse-db-init langfuse-server
+# Wait for langfuse-server healthy (~30s), then:
+open http://localhost:3002    # create admin user + project, copy public+secret keys
+cat >> .env <<EOF
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=http://langfuse-server:3000
+LANGFUSE_WEB_URL=http://localhost:3002
+LANGFUSE_NEXTAUTH_SECRET=<openssl rand -hex 32>
+LANGFUSE_SALT=<openssl rand -hex 32>
+EOF
+# Rebuild BOTH ai-service + ai-worker (Docker image split — see project_docker_image_split.md)
+docker compose up -d --build ai-service ai-worker api-gateway
+docker compose restart ai-worker
+
+# Set ANTHROPIC_API_KEY too, trigger a workflow, open http://localhost:3002/trace/<bid_id>
+# Expect: 1 trace per bid, 3 spans (BA/SA/Domain) per run, 3 generations per span (9 total for Bid-M).
+```
+
+**Known gaps carried to Phase 3.6+ / future convs:**
+- Live smoke (Langfuse + real LLM) not yet run — deferred to next conv with Docker access.
+- `.env.example` not modified — document the 6 new vars at the top of the file on the next conv that has write access.
+- Langfuse admin bootstrap still manual — Phase 3.6 Helm chart should automate via init container (D10 carry-forward).
+- OTLP bridge for non-Python services deferred to Phase 3.7.
+- Langfuse Prompts SDK (prompt version tracking) deferred to Phase 3.3.
+- PII redaction deferred to Phase 3.2 RBAC scope.
 
 ### Phase 2.5 Delivery Summary (2026-04-18, Conv-5 solo)
 **Scope:** real-time agent token streaming + per-phase `state_completed` events + frontend `AgentStreamPanel`. All on the existing Redis pub/sub + socket.io fanout — zero new infra. Deterministic-first: zero `agent_token` publishes when `ANTHROPIC_API_KEY` absent; `state_completed` always fires.
@@ -321,7 +420,7 @@ cd ../frontend && npx vitest run && npx tsc --noEmit && npm run build
 | 3.2 | Full RBAC per role | NOT STARTED | |
 | 3.3 | Audit dashboard | NOT STARTED | |
 | 3.4 | Retrospective module (S11) | NOT STARTED | |
-| 3.5 | LLM observability (Langfuse) | NOT STARTED | |
+| 3.5 | LLM observability (Langfuse) | DONE (deterministic-first) | LangfuseTracer noop wrapper + SDK path; activity spans + ClaudeClient generations; /bids/:id/trace-url gateway; Langfuse-link frontend button; docker-compose `profiles:["observability"]`. Live smoke + `.env.example` deferred |
 | 3.6 | Kubernetes migration | NOT STARTED | |
 | 3.7 | Performance optimization + load test | NOT STARTED | |
 

@@ -29,12 +29,15 @@ Document generation, full RBAC, audit, observability, production deployment.
 - Actual vs Estimated analysis
 - Estimation model refinement
 
-## Task 3.5: LLM Observability (Langfuse)
-- Self-hosted Langfuse deployment (`profiles: ["observability"]` — opt-in)
-- Trace every LLM call (prompt, response, cost, latency) via `ClaudeClient.generate` + `generate_stream` wrapper
-- Trace hierarchy: `trace(bid_id)` > `span(agent_analysis)` > `generation(node)`
-- Cost dashboard per bid / per state / per agent — Langfuse UI native (uses SDK-provided model pricing)
-- Quality scoring per agent — deferred to Phase 3.3 (audit dashboard)
+## Task 3.5: LLM Observability (Langfuse) — DELIVERED
+- Self-hosted Langfuse deployment (`profiles: ["observability"]` — opt-in) sharing the bidding Postgres with a dedicated `langfuse_db`.
+- Every LLM call wrapped in `tools.langfuse_client.LangfuseTracer` — no-op when `LANGFUSE_SECRET_KEY` unset.
+- Trace hierarchy `trace_id=str(bid_id) > span({agent}_analysis) > generation(<node>)`.
+- `GET /bids/:id/trace-url` (admin + bid_manager) + frontend `LangfuseLinkButton` opens the Langfuse UI in a new tab.
+- Cost dashboard per bid / per state / per agent — native Langfuse UI (pricing handled SDK-side).
+- Quality scoring per agent — deferred to Phase 3.3 audit dashboard.
+
+**Delivery manifest:** see memory `project_phase_3_5_delivered.md` and `CURRENT_STATE.md`.
 
 **Detailed execution plan:** see memory record `project_phase_3_5_detailed_plan.md`
 (12 decisions, 21-step order, $0 cost, ~500 LOC, solo-conv recommendation).

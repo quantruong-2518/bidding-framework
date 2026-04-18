@@ -19,11 +19,21 @@ import { BidsService } from './bids.service';
 import { CreateBidDto } from './create-bid.dto';
 import { UpdateBidDto } from './update-bid.dto';
 import type { Bid } from './bid.entity';
+import { LangfuseLinkService } from './langfuse-link.service';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('bids')
 export class BidsController {
-  constructor(private readonly bidsService: BidsService) {}
+  constructor(
+    private readonly bidsService: BidsService,
+    private readonly langfuseLinkService: LangfuseLinkService,
+  ) {}
+
+  @Get(':id/trace-url')
+  @Roles('admin', 'bid_manager')
+  getTraceUrl(@Param('id', new ParseUUIDPipe()) id: string): { url: string } {
+    return this.langfuseLinkService.getTraceUrl(id);
+  }
 
   @Post()
   @Roles('admin', 'bid_manager')

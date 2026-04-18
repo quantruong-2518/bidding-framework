@@ -8,12 +8,15 @@
 - Upstream: NestJS api-gateway calls us at `http://ai-service:8001/workflows/bid/*`.
 - Downstream: Qdrant (`qdrant:6333`), Temporal (`temporal:7233`), Redis (`redis:6379`), Postgres (`postgres:5432`), Anthropic API.
 
-## Delivery status (Phase 2.2 — deterministic-first)
-- Full 11-state DAG wired end-to-end: S0 Intake → S1 Triage (+human gate) → S2 Scoping → S3a/b/c parallel → S4..S11 → terminal `S11_DONE`.
-- S0/S1/S2 use real heuristics (Phase 1). S3a/b/c have three real LangGraph agents (BA / SA / Domain) **and** per-activity fallback to the Phase 2.1 deterministic stubs. Which path runs is decided at runtime by `config.claude.get_claude_settings().api_key`: absent → stub fallback (zero tokens); present → real LangGraph agent.
-- S4 Convergence emits heuristic cross-stream conflicts (API-layer mismatch / compliance-gap / NFR-field-presence) and a weighted readiness score (`0.40·ba + 0.35·sa + 0.25·domain`, gate 0.80). Real semantic LLM-compare deferred to Phase 3.
-- S5..S11 still deterministic stubs (Phase 2.1 shape preserved).
-- Feedback loops (S9 reject → S8/S6/S5/S2 etc.) are not yet wired — review stub auto-approves, Phase 2.4 owns the real gate.
+## Delivery status (Phase 3.5 — Langfuse observability layered on Phase 2 pipeline)
+- Full 11-state DAG wired end-to-end: S0 Intake → S1 Triage (+human gate) → S2 Scoping → S3a/b/c parallel → S4..S11 → terminal `S11_DONE` (or `S9_BLOCKED` when review gate exhausts rounds).
+- S0/S1/S2 use real heuristics. S3a/b/c have three real LangGraph agents (BA/SA/Domain) with per-activity fallback to deterministic stubs (gate: `config.claude.get_claude_settings().api_key`).
+- S3 streaming (Phase 2.5): `TokenPublisher` + `generate_stream` → Redis pub/sub → frontend `AgentStreamPanel`; `state_transition_activity` broadcasts phase completions.
+- S4 Convergence: heuristic cross-stream conflicts + weighted readiness gate 0.80. Real semantic LLM-compare deferred.
+- S5..S8 still deterministic stubs (Phase 2.1 shape). Phase 3.1 will replace S8 with Jinja templates.
+- S9 Review gate (Phase 2.4): real signal + loop-back + multi-round cap → `S9_BLOCKED` on exhaustion.
+- S2.6 Profile routing: Bid-S skips S5/S7; Bid-M/L full pipeline; XL logs parity-pending.
+- **Phase 3.5 Langfuse observability:** `ClaudeClient.generate`/`generate_stream` open a generation under an activity-level span when a span is bound via `tools.langfuse_client.span_context`. No-op when `LANGFUSE_SECRET_KEY` unset.
 
 ## Quick commands
 ```bash
@@ -108,8 +111,15 @@ ai-service/
     prompts/domain_agent.py  # Domain graph system prompts
 
   tools/
-    claude_client.py         # AsyncAnthropic wrapper with cache_control: ephemeral (prompt caching)
+    claude_client.py         # AsyncAnthropic wrapper with cache_control: ephemeral (prompt caching).
+                             # Phase 3.5: generate/generate_stream open Langfuse generations when a
+                             # span is bound via tools/langfuse_client.span_context.
+    langfuse_client.py       # Phase 3.5 — LangfuseTracer with no-op fallback; _CURRENT_LLM_SPAN
+                             # ContextVar; span_context asynccontextmanager.
     kb_search.py             # Qdrant search wrapper; degrades to [] on error
+
+  config/
+    langfuse.py              # Phase 3.5 — LangfuseSettings (env prefix LANGFUSE_).
 
   parsers/                   # Phase 2.3 — RFP → ParsedRFP → BidCardSuggestion.
     models.py                # ParsedRFP, Section, TableBlob, BidCardSuggestion, ParseResponse.
@@ -166,7 +176,7 @@ ai-service/
 - **Import cycle trap:** `workflows/models.py` does a late `from workflows.artifacts import ...` at the bottom so `BidState`'s artifact fields resolve. That works because `artifacts.py` imports only from `workflows.base` (and `agents.models`), not from `workflows.models`. If you add a type to `models.py` that `artifacts.py` needs, put it in `workflows/base.py` instead.
 - **Docker image split:** `ai-service` and `ai-worker` use SEPARATE image tags (`bid-framework-ai-service` vs `bid-framework-ai-worker`) even though they share the Dockerfile. After editing workflow/activity code, rebuild BOTH images and force-recreate the worker container, otherwise the live worker keeps running stale bytecode silently (no error, workflow just stops at an old terminal state).
 - **S3 parallel activities** are dispatched via `asyncio.gather(workflow.execute_activity(...), ...)`. If one stream errors permanently, `gather` cancels the others and the workflow fails. `return_exceptions=True` would let partial success through — add only when Phase 2.2 has real agents that sometimes degrade.
-- **Review stub auto-approves** regardless of consistency. The workflow does not loop back on `CHANGES_REQUESTED` / `REJECTED` yet — STATE_MACHINE.md §Feedback Loops is Phase 2.4 work. Do not seed any real source of non-APPROVED verdicts before that lands.
+- **S9 review gate is live (Phase 2.4):** `human_review_decision` signal + earliest-target loop-back + 3-round cap → `S9_BLOCKED` on exhaustion. Seeding a non-APPROVED verdict will re-enter earlier states, so don't test signals against a production bid.
 
 ## Pointers
 - Root rules: `../../CLAUDE.md`

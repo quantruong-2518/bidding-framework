@@ -29,6 +29,7 @@ watchdog = "^5.0.0"  # task 1.5 — optional; ingestion falls back to polling
 pypdf = "^5.1.0"  # task 2.3 — pure-Python PDF text extraction
 python-docx = "^1.1.0"  # task 2.3 — DOCX heading/table extraction
 python-frontmatter = "^1.1.0"  # task 2.7 — markdown frontmatter round-trip for bid_output files
+langfuse = "^2.59.0"  # phase 3.5 — LLM observability (self-hosted; no-op fallback when LANGFUSE_SECRET_KEY unset)
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

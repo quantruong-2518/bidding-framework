@@ -41,6 +41,7 @@ async def call_llm(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            node_name=node_name,
         )
     await pub.set_node(node_name)
     try:
@@ -51,6 +52,7 @@ async def call_llm(
             on_token=pub.push,
             max_tokens=max_tokens,
             temperature=temperature,
+            node_name=node_name,
         )
     finally:
         await pub.mark_done()

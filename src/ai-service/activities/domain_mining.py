@@ -13,6 +13,7 @@ from temporalio import activity
 from agents.domain_agent import run_domain_agent
 from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
+from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import DomainNotes, StreamInput
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,19 @@ async def domain_mining_activity(req: StreamInput) -> DomainNotes:
         agent="domain",
         attempt=activity.info().attempt,
     )
+    tracer = get_tracer()
+    span = tracer.start_span(
+        trace_id=str(req.bid_id),
+        name="domain_mining",
+        metadata={"attempt": activity.info().attempt, "agent": "domain"},
+    )
     try:
-        async with stream_context(publisher):
+        async with langfuse_span_context(span), stream_context(publisher):
             notes = await run_domain_agent(req)
     finally:
         await publisher.aclose()
+        span.end()
+        await tracer.aclose()
 
     activity.heartbeat("domain_agent_completed")
     activity.logger.info(

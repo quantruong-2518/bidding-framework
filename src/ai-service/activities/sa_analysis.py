@@ -13,6 +13,7 @@ from temporalio import activity
 from agents.sa_agent import run_sa_agent
 from agents.stream_publisher import TokenPublisher, stream_context
 from config.claude import get_claude_settings
+from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import SolutionArchitectureDraft, StreamInput
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,19 @@ async def sa_analysis_activity(req: StreamInput) -> SolutionArchitectureDraft:
         agent="sa",
         attempt=activity.info().attempt,
     )
+    tracer = get_tracer()
+    span = tracer.start_span(
+        trace_id=str(req.bid_id),
+        name="sa_analysis",
+        metadata={"attempt": activity.info().attempt, "agent": "sa"},
+    )
     try:
-        async with stream_context(publisher):
+        async with langfuse_span_context(span), stream_context(publisher):
             draft = await run_sa_agent(req)
     finally:
         await publisher.aclose()
+        span.end()
+        await tracer.aclose()
 
     activity.heartbeat("sa_agent_completed")
     activity.logger.info(

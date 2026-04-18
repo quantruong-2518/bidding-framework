@@ -12,6 +12,7 @@ import { Separator } from '@/components/ui/separator';
 import { StatusBadge } from '@/components/bids/status-badge';
 import { TriageReviewPanel } from '@/components/bids/triage-review-panel';
 import { ReviewGatePanel } from '@/components/bids/review-gate-panel';
+import { LangfuseLinkButton } from '@/components/bids/langfuse-link-button';
 import { WorkflowGraph } from '@/components/workflow/workflow-graph';
 import { StateDetail } from '@/components/workflow/state-detail';
 import {
@@ -101,6 +102,7 @@ export default function BidDetailPage(): React.ReactElement {
               wf: {b.workflowId}
             </span>
           )}
+          {b.workflowId && <LangfuseLinkButton bidId={id} />}
         </div>
       </div>
 

@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel, Field
 
 from config.claude import HAIKU, SONNET, get_claude_settings
+from tools.langfuse_client import LangfuseTracer, get_current_span, get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,17 @@ class ClaudeResponse(BaseModel):
 class ClaudeClient:
     """AsyncAnthropic wrapper enforcing the Task 1.3 caching + routing contract."""
 
-    def __init__(self, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        client: Any | None = None,
+        *,
+        tracer: LangfuseTracer | None = None,
+    ) -> None:
         self._client = client  # lazy; injected in tests
         self._settings = get_claude_settings()
+        # Phase 3.5 — observability. Tracer is a no-op when `LANGFUSE_SECRET_KEY`
+        # is absent, so default callers pay zero overhead.
+        self._tracer = tracer or get_tracer()
 
     def _get_client(self) -> Any:
         if self._client is not None:
@@ -63,8 +72,16 @@ class ClaudeClient:
         cache_system: bool = True,
         max_tokens: int = 2048,
         temperature: float = 0.2,
+        trace_id: str | None = None,
+        node_name: str | None = None,
     ) -> ClaudeResponse:
-        """Send a Messages request; cache the system prompt via `cache_control` when enabled."""
+        """Send a Messages request; cache the system prompt via `cache_control` when enabled.
+
+        Phase 3.5 — when a Langfuse span is bound to the current async context
+        (activity wrappers call :func:`span_context`), this method opens a
+        child ``generation`` record on Langfuse and closes it with the final
+        text + usage. No-op when the tracer is disabled.
+        """
         client = self._get_client()
 
         system_payload: list[dict[str, Any]] | str
@@ -85,15 +102,31 @@ class ClaudeClient:
             len(messages),
             cache_system,
         )
-        response = await client.messages.create(
+        generation = self._start_generation(
+            trace_id=trace_id,
+            node_name=node_name,
             model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_payload,
             messages=messages,
         )
+        try:
+            response = await client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_payload,
+                messages=messages,
+            )
+        except Exception:
+            generation.end(output=None, usage=None, metadata={"status": "error"})
+            raise
 
-        return _to_claude_response(response)
+        claude_response = _to_claude_response(response)
+        generation.end(
+            output=claude_response.text,
+            usage=claude_response.usage or None,
+            metadata={"stop_reason": claude_response.stop_reason} if claude_response.stop_reason else None,
+        )
+        return claude_response
 
     async def generate_stream(
         self,
@@ -105,6 +138,8 @@ class ClaudeClient:
         cache_system: bool = True,
         max_tokens: int = 2048,
         temperature: float = 0.2,
+        trace_id: str | None = None,
+        node_name: str | None = None,
     ) -> ClaudeResponse:
         """Stream tokens to ``on_token`` as they arrive; return the final completion.
 
@@ -136,24 +171,68 @@ class ClaudeClient:
             len(messages),
             cache_system,
         )
-        async with client.messages.stream(
+        generation = self._start_generation(
+            trace_id=trace_id,
+            node_name=node_name,
             model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_payload,
             messages=messages,
-        ) as stream:
-            async for text_delta in stream.text_stream:
-                if not text_delta:
-                    continue
-                if on_token is not None:
-                    try:
-                        await on_token(text_delta)
-                    except Exception as exc:  # noqa: BLE001 — streaming never blocks
-                        logger.warning("claude.stream.on_token_error err=%s", exc)
-            final_message = await stream.get_final_message()
+            metadata={"streaming": True},
+        )
+        try:
+            async with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_payload,
+                messages=messages,
+            ) as stream:
+                async for text_delta in stream.text_stream:
+                    if not text_delta:
+                        continue
+                    if on_token is not None:
+                        try:
+                            await on_token(text_delta)
+                        except Exception as exc:  # noqa: BLE001 — streaming never blocks
+                            logger.warning("claude.stream.on_token_error err=%s", exc)
+                final_message = await stream.get_final_message()
+        except Exception:
+            generation.end(output=None, usage=None, metadata={"status": "error"})
+            raise
 
-        return _to_claude_response(final_message)
+        claude_response = _to_claude_response(final_message)
+        generation.end(
+            output=claude_response.text,
+            usage=claude_response.usage or None,
+            metadata={"stop_reason": claude_response.stop_reason} if claude_response.stop_reason else None,
+        )
+        return claude_response
+
+    def _start_generation(
+        self,
+        *,
+        trace_id: str | None,
+        node_name: str | None,
+        model: str,
+        messages: list[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Open a Langfuse generation when a span is bound; returns a noop otherwise."""
+        span = get_current_span()
+        if span is None:
+            # Without a parent span we have no trace_id fallback for free-floating
+            # calls (e.g. unit tests). Fall through to noop.
+            from tools.langfuse_client import _NOOP_GEN  # local import — avoid cycles
+
+            return _NOOP_GEN
+        resolved_trace_id = trace_id or getattr(span, "trace_id", "") or ""
+        return self._tracer.start_generation(
+            trace_id=resolved_trace_id,
+            parent_span=span,
+            name=node_name or "llm_call",
+            model=model,
+            input_messages=messages,
+            metadata=metadata or {},
+        )
 
 
 def _to_claude_response(response: Any) -> ClaudeResponse:

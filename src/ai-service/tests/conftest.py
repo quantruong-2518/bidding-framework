@@ -14,6 +14,29 @@ if str(_ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _disable_langfuse_by_default(request, monkeypatch):
+    """Default tests must not emit Langfuse traces. Integration tests opt in.
+
+    Mirror of :func:`_force_llm_fallback_by_default`: scrubs the
+    ``LANGFUSE_SECRET_KEY`` env var so `LangfuseTracer.enabled` is False and
+    every call resolves to the no-op path.
+    """
+    if "integration" in request.keywords:
+        yield
+        return
+
+    from config.langfuse import get_langfuse_settings
+
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    get_langfuse_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_langfuse_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _force_llm_fallback_by_default(request, monkeypatch):
     """Default tests must not call Anthropic. Only `@pytest.mark.integration` opts in.
 
