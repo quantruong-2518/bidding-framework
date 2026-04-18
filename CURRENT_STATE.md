@@ -8,14 +8,15 @@
 ## Overall Status: PHASE 2 COMPLETE (all 7 sub-tasks) — next = Phase 3 (production hardening)
 
 ## >>> NEXT ACTION <<<
-**Phase 3.5 — Langfuse observability (solo).** Detailed plan locked in memory `project_phase_3_5_detailed_plan.md`. Self-hosted Langfuse under Docker `profiles: ["observability"]`; wraps `ClaudeClient.generate` + `generate_stream` via `_CURRENT_LLM_SPAN` ContextVar; `trace_id = str(bid_id)` convention so every activity adds spans to the same trace without workflow-side coordination. **12 locked decisions, 21-step order, ~500 LOC, $0.** Observability-first ordering: instrument BEFORE user turns on real LLM, so first real tokens have full traces.
+**Phase 3 roadmap locked** in memory `project_phase_3_roadmap.md` — 7 sub-tasks, ~7 conversations, MVP-pilot path (3.5 → 3.1 → 3.2a → 3.6) + post-pilot (3.2b → 3.3 → 3.4 → 3.7). Only 3.6 + 3.7 block on external infra; 3.1–3.5 all $0 + self-provisioned.
 
-**Alternative pair option:** 3.5 + 3.1 (Jinja proposal templates, ~800 LOC) — orthogonal, both $0. Split only if context budget allows.
+**Conv-6 (next, SOLO): Phase 3.5 Langfuse observability.** Plan in `project_phase_3_5_detailed_plan.md` — 12 decisions, 21-step order, ~500 LOC. Self-hosted under `profiles: ["observability"]`; wraps `ClaudeClient.generate` + `generate_stream` via `_CURRENT_LLM_SPAN` ContextVar; `trace_id = str(bid_id)` convention keeps workflow determinism. Rationale: observability-first — instrument BEFORE user turns on real LLM so first real tokens have full traces.
 
-**Deferred (external dep):**
-- Live-LLM smoke — needs `ANTHROPIC_API_KEY` in `src/.env`; rebuild both `ai-service` + `ai-worker`; `pytest -m integration -v`; watch `agent_token` events over WS + Langfuse traces (once 3.5 lands).
-- 3.2 Full RBAC — Keycloak realm `bidding` provisioning (`bidding-realm.json` + `--import-realm`).
-- 3.6 K8s migration / 3.7 Load testing — need cluster + traffic profile.
+**Conv-7 (SOLO): Phase 3.1 Jinja proposal templates.** Plan in `project_phase_3_1_detailed_plan.md` — 10 decisions, 22-step order, ~800 LOC. Replaces `assembly.py` stub with 7-section Jinja templates; stub-fallback on `TemplateError`; consistency checker (5 rules); `react-markdown` on frontend. End-user visible output for pilot demos.
+
+**Conv-8 (PAIR): Phase 3.2a Keycloak realm + Live-LLM smoke.** Plan TBD — roadmap breaks out sub-deliverables. Realm provisioning unblocks real auth; smoke runbook closes Phase 2 live-LLM carry-forward while realm is fresh context.
+
+**Later conversations:** 3.2b RBAC depth + audit log → 3.3 audit dashboard → 3.4 retrospective + kb-vault multi-tenant → 3.6 K8s + 3.7 load test. See roadmap for ordering rationale.
 
 ### Phase 2.5 Delivery Summary (2026-04-18, Conv-5 solo)
 **Scope:** real-time agent token streaming + per-phase `state_completed` events + frontend `AgentStreamPanel`. All on the existing Redis pub/sub + socket.io fanout — zero new infra. Deterministic-first: zero `agent_token` publishes when `ANTHROPIC_API_KEY` absent; `state_completed` always fires.
