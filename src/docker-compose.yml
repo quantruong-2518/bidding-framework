@@ -139,7 +139,13 @@ services:
         condition: service_healthy
     environment:
       PORT: "3000"
+      # Realm's frontendUrl forces token `iss` claim to the public URL
+      # regardless of caller, so JwtStrategy must verify against that value.
+      # JWKS fetch still goes through the internal `keycloak:8080` since
+      # `localhost:8080` is unreachable from inside the api-gateway container.
       KEYCLOAK_ISSUER: http://keycloak:8080/realms/bidding
+      KEYCLOAK_PUBLIC_ISSUER: http://localhost:8080/realms/bidding
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/bidding/protocol/openid-connect/certs
       KEYCLOAK_CLIENT_ID: bidding-api
       REDIS_URL: redis://redis:6379
       AI_SERVICE_URL: http://ai-service:8001

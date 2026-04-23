@@ -3,13 +3,13 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-18 (Phase 3.2a code delivery — Conv-8 solo, live-LLM smoke deferred)
+## Last Updated: 2026-04-23 (Phase 3.2a partial smoke — Conv-8b solo, A+B+C green, D/E/F deferred)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a (code) COMPLETE — next = Phase 3.2a live smoke + Phase 3.2b RBAC
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a (code + stub-LLM smoke) COMPLETE — next = real-LLM smoke OR Phase 3.2b RBAC
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-8b (smoke) OR Conv-9 (Phase 3.2b).** Two options:
-- **Smoke first (recommended):** Stand up Docker + set `ANTHROPIC_API_KEY`, run the Phase 3.2a live-LLM checklist (`project_phase_3_2a_delivered.md` §Deferred smoke). Closes 4 carry-forwards (Phase 2.2 / 2.5 / 3.1 / 3.5) in one walkthrough.
+**Next conversation = Conv-8c (real-LLM smoke) OR Conv-9 (Phase 3.2b).** Two options:
+- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Closes Phase 2.2 + 3.5 carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
 - **Phase 3.2b (Conv-9):** per-artifact ACL + audit log + `bids` TypeORM migration. Plan in `memory/project_phase_3_2b_detailed_plan.md`. Does NOT block on smoke.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
@@ -34,6 +34,35 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.2a Live Smoke — Conv-8b solo (2026-04-23, A+B+C green, D/E/F deferred)
+**Outcome:** Phase A (bring-up) + Phase B (PKCE/audience auth path) + Phase C (Bid-M end-to-end via stub LLM) all green. Phase D (real LLM) + E (Langfuse) + F (`pytest -m integration`) deferred — `ANTHROPIC_API_KEY` not yet provided. **3 of 4 deferred-smoke carry-forwards closed:** 3.2a auth (PKCE token + audience mapper), 2.5 streaming (12 `state_completed` events on Redis), 3.1 Jinja proposal (7 sections + 5/5 consistency). Still open: 2.2 (real LLM agents), 3.5 (Langfuse trace).
+
+**Real bug caught + fixed (would have 401'd every browser PKCE login in production):**
+- Realm JSON has `attributes.frontendUrl: "http://localhost:8080"` → Keycloak forces token `iss` claim to the public URL **regardless of caller** (browser OR backchannel).
+- `JwtStrategy` was checking `iss` against `KEYCLOAK_ISSUER=http://keycloak:8080/realms/bidding` (internal Docker hostname) AND using the same value to build the JWKS URI.
+- Result: every valid token returned 401. Browser users would have hit this on day one.
+- **Fix:** split into two env vars in `src/api-gateway/src/auth/jwt.strategy.ts`:
+  - `KEYCLOAK_PUBLIC_ISSUER` — used as `passport-jwt`'s `issuer:` option (defaults to `KEYCLOAK_ISSUER` for single-host dev).
+  - `KEYCLOAK_JWKS_URI` — used for `jwks-rsa`'s URL fetch (defaults to `${KEYCLOAK_ISSUER}/protocol/openid-connect/certs`).
+- `src/docker-compose.yml` api-gateway service now sets `KEYCLOAK_PUBLIC_ISSUER=http://localhost:8080/realms/bidding` and `KEYCLOAK_JWKS_URI=http://keycloak:8080/realms/bidding/protocol/openid-connect/certs`. `KEYCLOAK_ISSUER` is kept as the single-source default for both.
+
+**Auth path verified (after the fix):** `aud=bidding-api` ✅, valid token → `200 []` ✅, missing token → `401` ✅, garbage token → `401` ✅. Audience mapper from realm JSON works as designed.
+
+**Workflow path verified:** NEW → S11_DONE in ~10 s. All 12 `state_completed` events fired in correct order S0→S11 + 1 `approval_needed` at S9. Stub-LLM artifacts populated for all 8 keys (ba_draft, sa_draft, domain_notes, convergence, hld, wbs, pricing, proposal_package). `executive_summary: "Stub BA summary for Smoke Test Bank. Derived from 0 requirement atom(s)."` (expected — no key). `/trace-url` → `404` (LANGFUSE_WEB_URL unset, expected).
+
+**Jinja proposal verified:** 7 sections, 180–1930 chars body, 5/5 consistency checks pass: `ba_coverage`, `wbs_matches_pricing`, `client_name_consistent`, `rendered_all_sections`, `terminology_aligned`. NO fallback to 5-section stub.
+
+**Smoke harness deviations from the plan (record so Conv-8c knows):**
+- Tested PKCE programmatically via temporary `directAccessGrantsEnabled=true` on `bidding-frontend` (since browser PKCE redirect handler can't be driven from a CLI). Reverted to `false` after smoke. The `lib/auth/pkce.ts` + `/auth/callback/page.tsx` browser path is still only verified by the 65 vitest specs at delivery time — manual browser smoke recommended in Conv-8c.
+- `bidadmin` password reset to `Test1234!` via Admin API (override seed `ChangeMe!`); `requiredActions` cleared. Persists in `keycloak_data` volume across `docker compose down` (only wiped by `down -v`).
+
+**Known gaps still carried forward:**
+- Phase D (real LLM) — needs `ANTHROPIC_API_KEY`. ~$0.05–0.10 cost.
+- Phase E (Langfuse) — needs `--profile observability` + keys generated post-init. Closes 3.5 smoke.
+- Phase F (`pytest -m integration`) — needs key + bind-mount; final regression net.
+- `src/.env.example` edit — still permission-denied on this host. The 6 `KEYCLOAK_*` vars + the new `KEYCLOAK_PUBLIC_ISSUER` + `KEYCLOAK_JWKS_URI` need to be appended manually in Conv-8c or 9.
+- Silent token refresh + logout UI — still Phase 3.2b work.
 
 ### Phase 3.2a Delivery Summary (2026-04-18, Conv-8 solo — code only, live-LLM smoke deferred)
 **Scope:** Keycloak realm `bidding` provisioned via `--import-realm`, retire demo-mode in favour of real PKCE + `/auth/callback`, hard-code audience `bidding-api` in the NestJS JWT strategy. The "pair task" half that required Docker + ANTHROPIC_API_KEY (live-LLM smoke) is carried forward.

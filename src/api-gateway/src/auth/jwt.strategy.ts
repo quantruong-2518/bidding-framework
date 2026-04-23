@@ -29,9 +29,22 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   private static readonly logger = new Logger(JwtStrategy.name);
 
   constructor(configService: ConfigService) {
-    const issuer = configService.get<string>('KEYCLOAK_ISSUER');
+    const issuer =
+      configService.get<string>('KEYCLOAK_ISSUER') ??
+      'http://keycloak:8080/realms/bidding';
+    // Public-facing issuer URL embedded in token `iss` claim. Defaults to the
+    // realm's `frontendUrl` (http://localhost:8080) so browser-issued tokens
+    // verify. Falls back to `issuer` when unset (single-host dev).
+    const publicIssuer =
+      configService.get<string>('KEYCLOAK_PUBLIC_ISSUER') ?? issuer;
+    // JWKS endpoint — must be reachable from THIS process (api-gateway). Uses
+    // the internal `keycloak:8080` hostname inside Docker; `publicIssuer` is
+    // unreachable from inside the container.
+    const jwksUri =
+      configService.get<string>('KEYCLOAK_JWKS_URI') ??
+      `${issuer}/protocol/openid-connect/certs`;
 
-    if (!issuer) {
+    if (!configService.get<string>('KEYCLOAK_ISSUER')) {
       JwtStrategy.logger.warn(
         'KEYCLOAK_ISSUER missing — JWT verification will fail until set.',
       );
@@ -41,13 +54,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       audience: EXPECTED_AUDIENCE,
-      issuer: issuer ?? 'http://keycloak:8080/realms/bidding',
+      issuer: publicIssuer,
       algorithms: ['RS256'],
       secretOrKeyProvider: passportJwtSecret({
         cache: true,
         rateLimit: true,
         jwksRequestsPerMinute: 10,
-        jwksUri: `${issuer ?? 'http://keycloak:8080/realms/bidding'}/protocol/openid-connect/certs`,
+        jwksUri,
       }),
     };
     super(options);
