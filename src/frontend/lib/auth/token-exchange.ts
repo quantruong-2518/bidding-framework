@@ -2,14 +2,19 @@
  * Phase 3.2a — exchange an authorization code for tokens + decode the
  * access token into the {@link AuthUser} shape the rest of the app expects.
  *
- * The exchange targets Keycloak's token endpoint directly (public client,
- * no secret). Decoded user info comes from the ID token / access-token
- * claims — we intentionally skip the userinfo endpoint since the access
- * token already carries `preferred_username` + realm roles.
+ * The exchange targets the same-origin Next.js proxy route `/api/auth/token`
+ * rather than Keycloak directly. The proxy eliminates the cross-origin POST
+ * entirely — no preflight, no browser-extension interference, and the
+ * `redirect_uri` still reflects the browser origin as registered in the
+ * realm client. Decoded user info comes from the access-token claims — we
+ * intentionally skip the userinfo endpoint since the access token already
+ * carries `preferred_username` + realm roles.
  */
 
 import type { AuthUser } from '@/lib/api/types';
-import { decodeJwt, keycloakConfig } from './keycloak-url';
+import { decodeJwt } from './keycloak-url';
+
+const TOKEN_PROXY_PATH = '/api/auth/token';
 
 export interface TokenExchangeResult {
   accessToken: string;
@@ -47,7 +52,8 @@ export async function exchangeCodeForToken(args: {
   redirectUri: string;
   fetchImpl?: typeof fetch;
 }): Promise<TokenExchangeResult> {
-  const { url, realm, clientId } = keycloakConfig();
+  const clientId =
+    process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID ?? 'bidding-frontend';
   const fetchFn = args.fetchImpl ?? fetch;
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -57,7 +63,7 @@ export async function exchangeCodeForToken(args: {
     redirect_uri: args.redirectUri,
   });
 
-  const res = await fetchFn(`${url}/realms/${realm}/protocol/openid-connect/token`, {
+  const res = await fetchFn(TOKEN_PROXY_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -83,14 +89,15 @@ export async function refreshAccessToken(args: {
   refreshToken: string;
   fetchImpl?: typeof fetch;
 }): Promise<TokenExchangeResult> {
-  const { url, realm, clientId } = keycloakConfig();
+  const clientId =
+    process.env.NEXT_PUBLIC_KEYCLOAK_CLIENT_ID ?? 'bidding-frontend';
   const fetchFn = args.fetchImpl ?? fetch;
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     client_id: clientId,
     refresh_token: args.refreshToken,
   });
-  const res = await fetchFn(`${url}/realms/${realm}/protocol/openid-connect/token`, {
+  const res = await fetchFn(TOKEN_PROXY_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),

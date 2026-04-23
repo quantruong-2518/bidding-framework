@@ -84,11 +84,16 @@ function AuthCallbackInner(): React.ReactElement {
           verifier,
           redirectUri,
         });
-        if (cancelled) return;
+        // setAuth targets a zustand store — safe to call after unmount. Do it
+        // BEFORE the cancelled guard so a re-render that re-fires the effect
+        // (strict-mode / HMR / searchParams identity churn) does not discard
+        // the already-purchased token. The auth code is one-shot, so losing
+        // it means the user must restart sign-in from /login.
         setAuth(result.accessToken, result.user, {
           refreshToken: result.refreshToken,
           expiresAt: result.expiresAt,
         });
+        if (cancelled) return;
         router.replace(returnTo && returnTo.startsWith('/') ? returnTo : '/dashboard');
       } catch (exc) {
         if (cancelled) return;

@@ -57,6 +57,11 @@
 - Tested PKCE programmatically via temporary `directAccessGrantsEnabled=true` on `bidding-frontend` (since browser PKCE redirect handler can't be driven from a CLI). Reverted to `false` after smoke. The `lib/auth/pkce.ts` + `/auth/callback/page.tsx` browser path is still only verified by the 65 vitest specs at delivery time — manual browser smoke recommended in Conv-8c.
 - `bidadmin` password reset to `Test1234!` via Admin API (override seed `ChangeMe!`); `requiredActions` cleared. Persists in `keycloak_data` volume across `docker compose down` (only wiped by `down -v`).
 
+**Browser smoke follow-up (2nd bug + 1 race fix caught live):**
+- **CORS on direct Keycloak token POST:** browsers blocked the fetch from `http://localhost:3001` → `http://localhost:8080/.../token` intermittently (preflight-cache + extensions + WARP + mixed-origin policies all conspire in dev). Server-side CORS config on the realm was correct — this was a client-side / browser-env problem. **Fix:** added a same-origin Next.js API route `app/api/auth/token/route.ts` that proxies the POST to Keycloak over the internal Docker network (`KEYCLOAK_INTERNAL_URL=http://keycloak:8080`). `token-exchange.ts` now posts to `/api/auth/token` — no cross-origin, no preflight, no CORS. Works in any browser/profile.
+- **Callback cleanup race:** `if (cancelled) return;` was BEFORE `setAuth(...)`. If React re-rendered the callback page for any reason during the `await exchangeCodeForToken(...)` (strict-mode double-mount, searchParams identity change, dev HMR), the cleanup ran `cancelled=true` and the successfully-purchased token was silently discarded. The auth code is one-shot, so the user then saw "PKCE session not initialised" on retry. **Fix:** moved `setAuth(...)` BEFORE the cancelled guard (zustand store is global, safe to set post-unmount); only the `router.replace(...)` navigation still guards on cancelled.
+- Vitest full suite: **65/65 green** after the fix. `next build` succeeds.
+
 **Known gaps still carried forward:**
 - Phase D (real LLM) — needs `ANTHROPIC_API_KEY`. ~$0.05–0.10 cost.
 - Phase E (Langfuse) — needs `--profile observability` + keys generated post-init. Closes 3.5 smoke.
