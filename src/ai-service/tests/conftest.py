@@ -38,24 +38,40 @@ def _disable_langfuse_by_default(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _force_llm_fallback_by_default(request, monkeypatch):
-    """Default tests must not call Anthropic. Only `@pytest.mark.integration` opts in.
+    """Default tests must not call any LLM provider.
 
-    The S3 activity wrappers (`ba_analysis_activity`, etc.) gate on
-    `get_claude_settings().api_key`. Without this fixture a dev with the key
-    exported locally would trigger real LLM calls from the workflow tests.
+    Two layers of defence:
+
+    1. Scrub ``ANTHROPIC_API_KEY`` so the activity wrappers'
+       ``get_claude_settings().api_key`` gate triggers stub fallback.
+    2. (Phase 3.7) Inject a :class:`FakeLLMClient` as the default LLM
+       client so any code that DOES reach
+       :func:`tools.llm.client.get_default_client` returns a scripted
+       empty response instead of dialling LiteLLM (which would attempt
+       to hit the network even without keys).
+
+    Integration tests opt out with ``@pytest.mark.integration``.
     """
     if "integration" in request.keywords:
         yield
         return
 
     from config.claude import get_claude_settings
+    from config.llm import get_llm_settings
+    from tools.llm.client import set_default_client
+    from tools.llm.fake import FakeLLMClient
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     get_claude_settings.cache_clear()
+    get_llm_settings.cache_clear()
+
+    set_default_client(FakeLLMClient())
     try:
         yield
     finally:
         get_claude_settings.cache_clear()
+        get_llm_settings.cache_clear()
+        set_default_client(None)
 
 
 @pytest.fixture(autouse=True)

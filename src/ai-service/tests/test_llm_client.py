@@ -627,3 +627,161 @@ def test_fake_llm_client_is_an_llm_client_subclass() -> None:
 def test_llm_client_abstract() -> None:
     with pytest.raises(TypeError):
         LLMClient()  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# LiteLLMClient streaming on_token resilience
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamChunk:
+    def __init__(self, content: str | None) -> None:
+        self.choices = [
+            type("Choice", (), {"delta": type("Delta", (), {"content": content})()})()
+        ]
+
+
+@pytest.mark.asyncio
+async def test_litellm_client_streaming_swallows_on_token_errors() -> None:
+    """A failing on_token must NOT abort the stream — same contract as the
+    legacy ClaudeClient. The aggregated text still lands on the response."""
+
+    async def streaming_acompletion(**_kwargs: Any) -> Any:
+        async def _gen():
+            yield _FakeStreamChunk("hel")
+            yield _FakeStreamChunk("lo ")
+            yield _FakeStreamChunk("world")
+
+        return _gen()
+
+    client = LiteLLMClient(
+        settings=_FakeSettings(max_retries=1),
+        acompletion_fn=streaming_acompletion,
+    )
+
+    async def bad_token(_: str) -> None:
+        raise RuntimeError("publisher down")
+
+    response = await client.generate_stream(
+        LLMRequest(messages=[LLMMessage(role="user", content="hi")]),
+        on_token=bad_token,
+    )
+    assert response.text == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Langfuse generation hooks (Phase 3.5 instrumentation, now in the adapter)
+# ---------------------------------------------------------------------------
+
+
+class _FakeGeneration:
+    def __init__(self) -> None:
+        self.end_calls: list[dict[str, Any]] = []
+
+    def end(self, *, output=None, usage=None, metadata=None) -> None:
+        self.end_calls.append({"output": output, "usage": usage, "metadata": metadata})
+
+
+class _FakeTracer:
+    def __init__(self) -> None:
+        self.generation = _FakeGeneration()
+        self.start_calls: list[dict[str, Any]] = []
+
+    def start_generation(
+        self, *, trace_id, parent_span, name, model, input_messages, metadata
+    ):
+        self.start_calls.append(
+            {
+                "trace_id": trace_id,
+                "parent_span": parent_span,
+                "name": name,
+                "model": model,
+                "input_messages": input_messages,
+                "metadata": metadata,
+            }
+        )
+        return self.generation
+
+
+@pytest.mark.asyncio
+async def test_litellm_client_starts_langfuse_generation_when_span_bound() -> None:
+    from tools.langfuse_client import _NoopSpan, span_context
+
+    span = _NoopSpan()
+    span.trace_id = "bid-42"  # type: ignore[misc]
+
+    tracer = _FakeTracer()
+    client = LiteLLMClient(
+        settings=_FakeSettings(),
+        acompletion_fn=_build_acompletion(
+            [_FakeResponse(content="hello", usage=_FakeUsage(prompt_tokens=5, completion_tokens=3))]
+        ),
+        tracer=tracer,
+    )
+
+    async with span_context(span):
+        result = await client.generate(
+            LLMRequest(
+                messages=[LLMMessage(role="user", content="hi")],
+                node_name="extract_requirements",
+            )
+        )
+
+    assert result.text == "hello"
+    assert len(tracer.start_calls) == 1
+    assert tracer.start_calls[0]["name"] == "extract_requirements"
+    # generation.end called with the output + usage dict
+    assert len(tracer.generation.end_calls) == 1
+    end = tracer.generation.end_calls[0]
+    assert end["output"] == "hello"
+    assert end["usage"]["input_tokens"] == 5
+    assert end["usage"]["output_tokens"] == 3
+    assert "cost_usd" in end["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_litellm_client_no_generation_when_no_span_bound() -> None:
+    tracer = _FakeTracer()
+    client = LiteLLMClient(
+        settings=_FakeSettings(),
+        acompletion_fn=_build_acompletion([_FakeResponse(content="ok")]),
+        tracer=tracer,
+    )
+    # No span_context wrapper — adapter takes the noop path.
+    await client.generate(LLMRequest(messages=[LLMMessage(role="user", content="x")]))
+    assert tracer.start_calls == []  # never invoked the tracer
+
+
+@pytest.mark.asyncio
+async def test_litellm_client_ends_generation_with_status_error_on_failure() -> None:
+    from tools.langfuse_client import _NoopSpan, span_context
+
+    span = _NoopSpan()
+    span.trace_id = "bid-1"  # type: ignore[misc]
+
+    auth_cls = type("AuthenticationError", (Exception,), {})
+    tracer = _FakeTracer()
+
+    async def acompletion(**_kwargs: Any) -> Any:
+        raise auth_cls("401 expired")
+
+    client = LiteLLMClient(
+        settings=_FakeSettings(max_retries=1),
+        acompletion_fn=acompletion,
+        tracer=tracer,
+    )
+
+    async with span_context(span):
+        with pytest.raises(LLMAuthError):
+            await client.generate(
+                LLMRequest(
+                    messages=[LLMMessage(role="user", content="x")],
+                    node_name="critique",
+                )
+            )
+
+    # generation.end called with status=error metadata, output=None
+    assert len(tracer.generation.end_calls) == 1
+    end = tracer.generation.end_calls[0]
+    assert end["output"] is None
+    assert end["metadata"] == {"status": "error"}
