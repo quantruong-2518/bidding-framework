@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel, Field
 
+from config.llm import LLMSettings, get_llm_settings
 from tools.llm import LLMClient, LLMMessage, LLMRequest, get_default_client
 from tools.llm.types import LLMResponse
 
@@ -78,6 +79,7 @@ class ClaudeClient:
         *,
         llm_client: LLMClient | None = None,
         tracer: Any | None = None,
+        settings: LLMSettings | None = None,
     ) -> None:
         if client is not None:
             # The pre-3.7 ClaudeClient took an ``AsyncAnthropic`` instance
@@ -94,6 +96,7 @@ class ClaudeClient:
         del tracer  # noqa: F841 — preserved for signature compat
 
         self._llm: LLMClient = llm_client or get_default_client()
+        self._settings: LLMSettings = settings or get_llm_settings()
 
     async def generate(
         self,
@@ -107,7 +110,7 @@ class ClaudeClient:
         trace_id: str | None = None,
         node_name: str | None = None,
     ) -> ClaudeResponse:
-        request = _to_llm_request(
+        request = self._to_llm_request(
             model=model,
             system=system,
             messages=messages,
@@ -133,7 +136,7 @@ class ClaudeClient:
         trace_id: str | None = None,
         node_name: str | None = None,
     ) -> ClaudeResponse:
-        request = _to_llm_request(
+        request = self._to_llm_request(
             model=model,
             system=system,
             messages=messages,
@@ -146,42 +149,52 @@ class ClaudeClient:
         response = await self._llm.generate_stream(request, on_token=on_token)
         return _to_claude_response(response)
 
+    def _to_llm_request(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        cache_system: bool,
+        max_tokens: int,
+        temperature: float,
+        trace_id: str | None,
+        node_name: str | None,
+    ) -> LLMRequest:
+        """Translate the legacy ``(model, system, messages)`` shape into
+        :class:`LLMRequest`.
 
-def _to_llm_request(
-    *,
-    model: str,
-    system: str,
-    messages: list[dict[str, Any]],
-    cache_system: bool,
-    max_tokens: int,
-    temperature: float,
-    trace_id: str | None,
-    node_name: str | None,
-) -> LLMRequest:
-    """Translate the legacy positional model + (system, messages) shape into
-    :class:`LLMRequest`. The system message is prepended; subsequent
-    messages keep their roles."""
-    llm_messages: list[LLMMessage] = [LLMMessage(role="system", content=system)]
-    for m in messages:
-        # Legacy callers always pass plain {"role": ..., "content": str}.
-        llm_messages.append(LLMMessage(role=m["role"], content=m["content"]))
+        Provider-aware model routing — when ``LLM_PROVIDER=anthropic`` the
+        explicit Anthropic model ID flows through verbatim (Phase 2.2
+        behaviour preserved bit-for-bit). For any other provider the
+        explicit model is dropped so the LiteLLM adapter falls back to
+        :meth:`LLMSettings.resolved_model` — i.e. ``model=HAIKU`` becomes
+        ``openai/gpt-4o-mini`` when the env says ``LLM_PROVIDER=openai``.
+        """
+        llm_messages: list[LLMMessage] = [LLMMessage(role="system", content=system)]
+        for m in messages:
+            # Legacy callers always pass plain {"role": ..., "content": str}.
+            llm_messages.append(LLMMessage(role=m["role"], content=m["content"]))
 
-    # Map the model ID to a role so the LiteLLM adapter can still apply the
-    # right defaults if the explicit `model` kwarg ever drops out — but
-    # keep `model=model` so Phase 2.2 behaviour (always Anthropic) is
-    # preserved bit-for-bit when no env override is set.
-    role = "extraction" if "haiku" in model.lower() else "reasoning"
+        role = "extraction" if "haiku" in model.lower() else "reasoning"
 
-    return LLMRequest(
-        messages=llm_messages,
-        role=role,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        cache_policy="ephemeral" if cache_system else "none",
-        trace_id=trace_id,
-        node_name=node_name,
-    )
+        # Provider switch: only honour the explicit Anthropic ID when the
+        # configured provider is Anthropic. Otherwise let role routing pick
+        # the equivalent reasoning/extraction model on the new provider.
+        explicit_model: str | None = (
+            model if self._settings.provider == "anthropic" else None
+        )
+
+        return LLMRequest(
+            messages=llm_messages,
+            role=role,
+            model=explicit_model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            cache_policy="ephemeral" if cache_system else "none",
+            trace_id=trace_id,
+            node_name=node_name,
+        )
 
 
 def _to_claude_response(response: LLMResponse) -> ClaudeResponse:

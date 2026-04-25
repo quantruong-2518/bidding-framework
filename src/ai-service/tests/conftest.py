@@ -61,7 +61,17 @@ def _force_llm_fallback_by_default(request, monkeypatch):
     from tools.llm.client import set_default_client
     from tools.llm.fake import FakeLLMClient
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Scrub every provider's key so `is_llm_available()` returns False
+    # regardless of which provider is configured. Tests that need a real
+    # path opt in via the integration marker.
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
     get_claude_settings.cache_clear()
     get_llm_settings.cache_clear()
 

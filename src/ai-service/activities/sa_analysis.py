@@ -12,7 +12,7 @@ from temporalio import activity
 
 from agents.sa_agent import run_sa_agent
 from agents.stream_publisher import TokenPublisher, stream_context
-from config.claude import get_claude_settings
+from config.llm import is_llm_available
 from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import SolutionArchitectureDraft, StreamInput
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @activity.defn(name="sa_analysis_activity")
 async def sa_analysis_activity(req: StreamInput) -> SolutionArchitectureDraft:
     """Run the SA agent; heartbeat so long LLM calls don't trip activity timeouts."""
-    if not get_claude_settings().api_key:
+    if not is_llm_available():
         from activities.stream_stubs import sa_analysis_stub_activity
 
         activity.logger.info("sa_analysis.fallback_to_stub bid_id=%s", req.bid_id)

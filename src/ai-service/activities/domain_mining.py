@@ -12,7 +12,7 @@ from temporalio import activity
 
 from agents.domain_agent import run_domain_agent
 from agents.stream_publisher import TokenPublisher, stream_context
-from config.claude import get_claude_settings
+from config.llm import is_llm_available
 from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import DomainNotes, StreamInput
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @activity.defn(name="domain_mining_activity")
 async def domain_mining_activity(req: StreamInput) -> DomainNotes:
     """Run the Domain agent; heartbeat so long LLM calls don't trip activity timeouts."""
-    if not get_claude_settings().api_key:
+    if not is_llm_available():
         from activities.stream_stubs import domain_mining_stub_activity
 
         activity.logger.info("domain_mining.fallback_to_stub bid_id=%s", req.bid_id)
