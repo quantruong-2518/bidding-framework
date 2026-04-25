@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/lib/auth/store';
+import { useSilentTokenRefresh } from '@/lib/auth/use-silent-refresh';
 import { fetchAcl } from '@/lib/api/acl';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -25,6 +26,10 @@ export function ProviderGate({ children }: ProviderGateProps): React.ReactElemen
   const token = useAuthStore((s) => s.accessToken);
   const acl = useAuthStore((s) => s.acl);
   const setAcl = useAuthStore((s) => s.setAcl);
+
+  // Schedules a silent refresh 60 s before access-token expiry. No-ops
+  // when refreshToken/expiresAt are unset (e.g. before login).
+  useSilentTokenRefresh();
 
   React.useEffect(() => {
     if (hydrated && !token) {
