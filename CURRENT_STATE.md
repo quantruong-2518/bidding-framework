@@ -3,19 +3,39 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-25 (tactical cleanup Conv-T1 — 5 atomic commits, code-only $0 list now empty)
+## Last Updated: 2026-04-25 (Phase 3.7 LiteLLM provider abstraction — 3 atomic commits, 63 unit specs)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened, all $0 follow-ups closed) COMPLETE — every remaining task needs an external resource
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 (code) COMPLETE — every remaining task needs an external resource
 
 ## >>> NEXT ACTION <<<
-Code-only `$0` work is **DONE**. Five atomic commits landed today (Conv-T1) covering all follow-ups from `project_next_steps_post_conv10.md` except `.env.example` rebuild (still permission-blocked). To proceed, supply ONE external resource:
+Phase 3.7 just shipped — provider abstraction is now in place. Code-only `$0` work consumed.
 
-- ✅ `ANTHROPIC_API_KEY` + Docker → **Conv-8c** (40 min, ~$0.10, closes 4 carry-forwards: Phase 2.2 real-LLM + 3.5 Langfuse + 3.2b live + 3.3 live).
-- ✅ `ANTHROPIC_API_KEY` only (no Docker) → design-only work for Conv-11 Phase 3.4; LLM-needing parts blocked.
-- ✅ K8s cluster + k6 runner → **Conv-12** (Phase 3.6 + 3.7 — Helm + load test).
+- ✅ `ANTHROPIC_API_KEY` + Docker → **Conv-8c** (40 min, ~$0.10, closes 4 carry-forwards: Phase 2.2 real-LLM + 3.5 Langfuse + 3.2b live + 3.3 live; now also smokes the 3.7 LiteLLM path under provider=anthropic).
+- ✅ Either `ANTHROPIC_API_KEY` OR `OPENAI_API_KEY` + Docker → run Conv-8c with the chosen provider via a single `LLM_PROVIDER` env flip.
+- ✅ K8s cluster + k6 runner → **Conv-12** (Phase 3.6 K8s + 3.7K8s load test — note: that "3.7" is the K8s-loadtest phase, not the LiteLLM phase that just shipped).
 - ❌ None of the above → no further `$0` code work remains; revisit when at least one resource arrives.
 
-**Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` (Phase 3.2b + 3.3 + post-review hardening) and `memory/project_conv_2026_04_25_tactical_cleanup.md` (this round). Combined day total: 8 commits, 18 pytest / 200 jest / 90 vitest. No phase ships unverified at the unit level; Docker smokes are the carry-forward.
+**Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` (Phase 3.2b + 3.3 + post-review hardening), `memory/project_conv_2026_04_25_tactical_cleanup.md` (T1 — 5 commits), and `memory/project_phase_3_7_delivered.md` (this round). Combined day total: 11 commits, 81 unit specs added (8 jest + 9 vitest + 63 pytest), 200 jest / 90 vitest / ~95 pytest cumulative.
+
+### Phase 3.7 LLM provider abstraction — Conv-T2 (2026-04-25, same day)
+**Trigger:** user asked "giờ tôi có thể làm lõi LLM có thể là cả API của Anthropic lẫn ChatGPT API không?" — uncovered that root `CLAUDE.md` chose LiteLLM since Phase 1 but the code was Anthropic-direct via `tools/claude_client.py`. This phase corrects course to the architecture doc.
+
+1. **`refactor(ai-service): introduce tools/llm provider-agnostic abstraction`** (a44c5b4) — NEW `tools/llm/` package: types (LLMMessage / LLMRequest / LLMResponse / TokenUsage), errors (5-class taxonomy), retry (tenacity, 3 attempts × exp backoff, retryable-only), cost (litellm.completion_cost + fallback price table for Anthropic+OpenAI+Gemini), client ABC, LiteLLMClient (with structured output via response_schema + JSON-mode + 1-retry validation echo), FakeLLMClient. NEW `config/llm.py` (LLMSettings + PROVIDER_DEFAULTS for anthropic/openai/bedrock/gemini). `pyproject.toml` adds `tenacity ^9.0.0`. Pure-additive — no existing test broken. Brand isolation: only LiteLLMClient and cost.py import litellm.
+
+2. **`refactor(ai-service): ClaudeClient becomes a wrapper over LLMClient`** (0a747db) — `tools/claude_client.py` re-implemented as a translation layer. AsyncAnthropic SDK no longer imported here. Existing agents + their tests unchanged (mocks intercept at `ClaudeClient.generate`). DELETED `test_claude_client.py` + `test_claude_client_tracing.py` (legacy AsyncAnthropic-direct internals coverage; equivalent now in test_llm_client.py via LiteLLMClient + Langfuse-hook tests). NEW `test_claude_client_shim.py` (7 specs) verifies the wrapper translates correctly. conftest now also clears `get_llm_settings.cache_clear()` + injects FakeLLMClient as default.
+
+3. **`feat(ai-service): env-driven provider + per-role model swap`** (80ced5e) — closes the abstraction. New `is_llm_available()` in `config/llm.py` (provider-aware credential check via `PROVIDER_KEY_VARS`). Activity wrappers (ba/sa/domain) migrate from `get_claude_settings().api_key` → `is_llm_available()`. Wrapper now provider-aware: `LLM_PROVIDER=anthropic` keeps explicit `model=HAIKU` ID; any other provider drops it so role routing kicks in (`model=HAIKU` becomes `openai/gpt-4o-mini` under `LLM_PROVIDER=openai`). +12 unit specs.
+
+**Operating model after 3.7:**
+- Default: `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY=sk-...` → Sonnet/Haiku, identical to pre-3.7.
+- Switch: `LLM_PROVIDER=openai` + `OPENAI_API_KEY=sk-...` → gpt-4o/gpt-4o-mini, agents unaware.
+- Mix (cost-optimised): `LLM_MODEL_REASONING=anthropic/claude-sonnet-4-6` + `LLM_MODEL_EXTRACTION=openai/gpt-4o-mini` + both keys → reasoning on Anthropic, extraction on cheaper OpenAI; saves ~85% on extraction calls.
+
+**Tests at delivery:** 63 unit specs across `tests/test_llm_client.py` (44) + `tests/test_claude_client_shim.py` (7) + `tests/test_llm_settings.py` (12). Run locally with `pytest --noconftest -p no:cacheprovider -q` (existing 18 pytests still need Docker because conftest imports temporalio).
+
+**Known follow-ups (not in this phase):**
+- Agents still import HAIKU/SONNET constants — final cleanup migrates them to `LLMRequest(role="extraction"|"reasoning")` directly + deletes `tools/claude_client.py` + `config/claude.py`. Tactical commit, not phase-blocking.
+- Live LiteLLM smoke (Conv-8c) — verify cost.py + Langfuse hook + retries fire end-to-end with a real provider key.
 
 ### Tactical cleanup Conv-T1 (2026-04-25, same day)
 **Trigger:** No external resources; took 5 of 6 code-only follow-up items from `project_next_steps_post_conv10.md` and shipped them as 5 atomic commits.
