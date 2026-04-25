@@ -3,34 +3,33 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-25 (tactical cleanup Conv-T1 — 3 commits, 301 tests green)
+## Last Updated: 2026-04-25 (tactical cleanup Conv-T1 — 5 atomic commits, code-only $0 list now empty)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened, tactical cleanup) COMPLETE — code-only $0 work nearly exhausted; remaining items need external resources or are < 30 min each
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened, all $0 follow-ups closed) COMPLETE — every remaining task needs an external resource
 
 ## >>> NEXT ACTION <<<
-**Open `memory/project_next_steps_post_conv10.md` first** — branch picker, preconditions, acceptance criteria. Tactical cleanup batch landed today (Conv-T1); 2 small items remain code-only.
+Code-only `$0` work is **DONE**. Five atomic commits landed today (Conv-T1) covering all follow-ups from `project_next_steps_post_conv10.md` except `.env.example` rebuild (still permission-blocked). To proceed, supply ONE external resource:
 
-**Quick decision tree:**
 - ✅ `ANTHROPIC_API_KEY` + Docker → **Conv-8c** (40 min, ~$0.10, closes 4 carry-forwards: Phase 2.2 real-LLM + 3.5 Langfuse + 3.2b live + 3.3 live).
-- ✅ `ANTHROPIC_API_KEY` only (no Docker) → design work for Conv-11 Phase 3.4 (real S11 retrospective + multi-tenant Qdrant); LLM-needing parts blocked.
+- ✅ `ANTHROPIC_API_KEY` only (no Docker) → design-only work for Conv-11 Phase 3.4; LLM-needing parts blocked.
 - ✅ K8s cluster + k6 runner → **Conv-12** (Phase 3.6 + 3.7 — Helm + load test).
-- ❌ None of the above → **remaining $0 cleanup**: silent token refresh + logout UI (~1h, 3.2a), `BidsService` redis publish failure → DLQ (~30 min, Phase 1 carry). `.env.example` rebuild still permission-blocked.
+- ❌ None of the above → no further `$0` code work remains; revisit when at least one resource arrives.
 
-**Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` (Phase 3.2b + 3.3 + post-review hardening) and `memory/project_conv_2026_04_25_tactical_cleanup.md` (this round). Combined day total: 6 commits, 18 pytest / 198 jest / 85 vitest. No phase ships unverified at the unit level; Docker smokes are the carry-forward.
+**Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` (Phase 3.2b + 3.3 + post-review hardening) and `memory/project_conv_2026_04_25_tactical_cleanup.md` (this round). Combined day total: 8 commits, 18 pytest / 200 jest / 90 vitest. No phase ships unverified at the unit level; Docker smokes are the carry-forward.
 
 ### Tactical cleanup Conv-T1 (2026-04-25, same day)
-**Trigger:** No external resources; took 3 of 6 code-only follow-up items from `project_next_steps_post_conv10.md` and shipped them as 3 atomic commits.
+**Trigger:** No external resources; took 5 of 6 code-only follow-up items from `project_next_steps_post_conv10.md` and shipped them as 5 atomic commits.
 
-1. **`fix(audit-dashboard): per-bid cost fanout in recentBids`** — closes the 3.3 follow-up note. `recentBids[].costUsd` was hard-coded to 0; now fans out via `langfuse.forBid` (chunkedMap concurrency 5) when configured, skipped entirely when not. Per-bid warnings dedup'd. Backend type + frontend mirror updated. +3 jest specs (configured / unconfigured / per-bid failure).
-2. **`feat(audit-dashboard): admin gate on /audit page`** — defence-in-depth. New `components/layout/admin-gate.tsx` (redirects non-admin to `/dashboard`; configurable `redirectTo`). Wraps cross-bid `/audit` page. The per-bid `/audit/[bidId]` page is intentionally NOT gated (server allows admin+bid_manager+qc). Existing 4 audit-dashboard tests now seed an admin user; new `__tests__/admin-gate.test.tsx` adds 4 specs (loading / admin / non-admin redirect / custom redirectTo).
-3. **`fix(audit): dedupe identical GET reads inside a 30 s window`** — defence-in-depth for `@SkipAudit()`. `AuditService` now suppresses identical (userSub, GET-action, resourceId, 2xx/3xx) rows in a 30 s window (LRUCache, 5 000 max). State-changing methods + ≥400 errors are NEVER deduped. +5 jest specs. Test-only `clearDedupeCacheForTest()` helper.
+1. **`fix(audit-dashboard): per-bid cost fanout in recentBids`** (364bc53) — closes the 3.3 follow-up note. `recentBids[].costUsd` was hard-coded to 0; now fans out via `langfuse.forBid` (chunkedMap concurrency 5) when configured, skipped entirely when not. Per-bid warnings dedup'd. Backend type + frontend mirror updated. +3 jest specs.
+2. **`feat(audit-dashboard): admin gate on /audit page`** (f574c88) — defence-in-depth. New `components/layout/admin-gate.tsx` (redirects non-admin; configurable `redirectTo`). Wraps cross-bid `/audit` page. Per-bid `/audit/[bidId]` page intentionally NOT gated (server allows admin+bid_manager+qc). +4 vitest specs.
+3. **`fix(audit): dedupe identical GET reads inside a 30 s window`** (232ad42) — defence-in-depth for `@SkipAudit()`. `AuditService` suppresses identical (userSub, GET-action, resourceId, 2xx/3xx) rows in a 30 s window (LRUCache, 5 000 max). State-changing methods + ≥400 errors NEVER dedupe. +5 jest specs.
+4. **`fix(bids): route failed bid.created publishes to a Redis DLQ`** (f1b629e) — closes the Phase 1 carry. Three-tier failover: XADD bid.events → LPUSH bid.events.dlq (cap 1 000) → logger.error with full payload. Bid row already persisted in Postgres so user request succeeds at every tier. New `RedisService.deadLetter()` method. +2 jest specs.
+5. **`feat(auth): silent token refresh 60 s before expiry`** (81dc11a) — closes the Phase 3.2a follow-up. New `lib/auth/use-silent-refresh.ts` hook mounted in `ProviderGate`; calls `refreshAccessToken` (already shipped) ahead of `expiresAt`. Failure → `clearAuth` + `router.replace('/login')`. Cleanup-safe: timer cleared on unmount so logout doesn't race a stale refresh. +5 vitest specs (no-op / scheduled / immediate / failure / unmount).
 
-**Tests at delivery:** api-gateway jest **198 passed / 14 suites** (+8 from 190); frontend vitest **85 passed / 15 suites** (+4 from 81); ai-service pytest unchanged (18). `tsc --noEmit` clean both sides.
+**Tests at delivery:** api-gateway jest **200 passed / 14 suites** (+10 from 190 baseline); frontend vitest **90 passed / 16 suites** (+9 from 81 baseline, +2 new files); ai-service pytest unchanged (18). `tsc --noEmit` clean both sides.
 
-**Remaining code-only items (none ship-blocking):**
-- Silent token refresh + logout UI (~1 h, Phase 3.2a)
-- `BidsService` redis publish failure → DLQ (~30 min, Phase 1 carry)
-- `src/.env.example` rebuild — STILL permission-blocked (4 .env.example files all denied by sandbox)
+**Remaining $0 item (still permission-blocked):**
+- `src/.env.example` rebuild — 4 .env.example files (`src/`, `src/frontend/`, `src/api-gateway/`, `src/ai-service/`) all denied by sandbox; needs the permission lifted before any agent can edit them. List of 14 env vars to append documented in `project_next_steps_post_conv10.md`.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
