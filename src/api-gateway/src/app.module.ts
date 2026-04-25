@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { AclModule } from './acl/acl.module';
 import { AppController } from './app.controller';
+import { AuditDashboardModule } from './audit-dashboard/audit-dashboard.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
@@ -29,6 +30,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     WorkflowsModule,
     ParsersModule,
     EventsModule,
+    AuditDashboardModule,
   ],
   controllers: [AppController],
   providers: [

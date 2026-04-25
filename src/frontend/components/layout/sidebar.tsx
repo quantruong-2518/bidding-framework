@@ -3,23 +3,34 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Briefcase, PlusCircle } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Briefcase,
+  PlusCircle,
+  ShieldCheck,
+} from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
+import { useAuthStore } from '@/lib/auth/store';
 
 interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  adminOnly?: boolean;
 }
 
 const ITEMS: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bids', label: 'Bids', icon: Briefcase },
   { href: '/bids/new', label: 'New bid', icon: PlusCircle },
+  { href: '/audit', label: 'Audit', icon: ShieldCheck, adminOnly: true },
 ];
 
 export function Sidebar(): React.ReactElement {
   const pathname = usePathname();
+  const roles = useAuthStore((s) => s.user?.roles ?? []);
+  const isAdmin = roles.includes('admin');
+  const visible = ITEMS.filter((i) => !i.adminOnly || isAdmin);
 
   return (
     <aside className="hidden w-56 shrink-0 border-r border-border bg-card lg:flex lg:flex-col">
@@ -30,7 +41,7 @@ export function Sidebar(): React.ReactElement {
         </Link>
       </div>
       <nav className="flex-1 space-y-1 p-2">
-        {ITEMS.map((item) => {
+        {visible.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           return (

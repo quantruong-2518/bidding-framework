@@ -3,14 +3,14 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-25 (Phase 3.2b delivered — Conv-9 solo, 244 tests green, Docker smoke deferred)
+## Last Updated: 2026-04-25 (Phase 3.3 delivered — Conv-10 solo, 269 tests green, Temporal agg stubbed)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b (code) COMPLETE — next = Phase 3.3 audit dashboard OR Conv-8c real-LLM smoke
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code) COMPLETE — next = Phase 3.4 retrospective OR Conv-8c real-LLM smoke
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-8c (real-LLM smoke) OR Conv-10 (Phase 3.3 dashboard).** Two options:
-- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Closes Phase 2.2 + 3.5 + 3.2b Docker carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
-- **Phase 3.3 (Conv-10):** Audit dashboard aggregating Temporal + audit_log + Langfuse — reads from 3.2b's `audit_log` table. Plan in `memory/project_phase_3_3_detailed_plan.md`. Does NOT block on smoke.
+**Next conversation = Conv-11 (Phase 3.4) OR Conv-8c (real-LLM smoke).** Two options:
+- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Also populates the 3.3 audit dashboard end-to-end. Closes Phase 2.2 + 3.5 + 3.2b + 3.3 Docker carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
+- **Phase 3.4 (Conv-11):** Real S11 retrospective + kb-vault multi-tenant isolation. Plan in `memory/project_phase_3_4_detailed_plan.md`. ~$0.01–0.05/bid, needs ANTHROPIC_API_KEY.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
@@ -34,6 +34,71 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.3 Delivery — Conv-10 solo (2026-04-25)
+**Scope:** Audit + cost dashboard stitching three upstreams (Postgres `audit_log` from 3.2b, Langfuse REST API, Temporal Visibility). Per-bid drill-down + cross-bid summary + recharts cost panels + CSV export. Partial-failure tolerant — every upstream miss adds a string to `warnings[]` rather than failing the response. No external deps, $0 cost (reads sources that already exist). Conv-10 solo.
+
+**New files (api-gateway) — audit-dashboard module:**
+- `src/audit-dashboard/types.ts` — contract DTOs (`BidAuditDetail`, `DashboardSummary`, `CostsResponse`, helpers).
+- `src/audit-dashboard/cache.ts` — `TtlCache` LRU wrapper, 5-minute TTL, keyed by normalised query string. Used by service for all 3 endpoints.
+- `src/audit-dashboard/aggregators/audit-log.aggregator.ts` — TypeORM reads on `audit_log`: `forBid(bidId)` (500-row per-bid chronological), `recent(range, role?)`, `distinctBidCount(range)` (raw SQL DISTINCT COUNT).
+- `src/audit-dashboard/aggregators/langfuse.aggregator.ts` — REST-only integration. `forBid` lists traces by `tags[]=bid_id` then walks per-trace GENERATION observations; `aggregateRange` sweeps the date window. Returns zero-values + warning when `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` unset. Exports pure helper `summariseObservations(obs[])` for unit tests.
+- `src/audit-dashboard/aggregators/temporal.aggregator.ts` — **stub** returning `{events: [], warning: "Temporal Visibility integration is stubbed (lands with Phase 3.6 K8s)."}`. Interface preserved so Phase 3.6 can drop in `@temporalio/client` without touching the service layer.
+- `src/audit-dashboard/audit-dashboard.service.ts` — `getBidDetail`, `getSummary`, `getCosts`, `summaryToCsv`. Every method uses `Promise.allSettled` → warnings[] accumulates rejections; admin never sees a 500 because one upstream flapped.
+- `src/audit-dashboard/audit-dashboard.controller.ts` — 4 endpoints: `GET /bids/:id/audit` (admin+bid_manager+qc), `GET /dashboard/audit` (admin), `GET /dashboard/audit.csv` (admin, `Content-Type: text/csv`), `GET /dashboard/costs` (admin). Date validator enforces `YYYY-MM-DD`; default range is the last 30 days.
+- `src/audit-dashboard/audit-dashboard.module.ts` — wires TypeORM + HttpModule + BidsModule, exports `AuditDashboardService` for future reuse.
+- `test/audit-dashboard.service.spec.ts` — 10 Jest cases: bid detail merge, partial-failure warnings, NotFoundException propagation, TTL cache, summary aggregation + filter, Langfuse-unconfigured warning, invalid-date reject, CSV serializer (header + row + footer comments), `summariseObservations` (per-agent + per-model + p95 latency + empty-input edge).
+- `test/audit-dashboard.controller.spec.ts` — 7 Jest cases: detail round-trip, filter params pass-through, default range, 400 on bad date, CSV content, groupBy normalisation, valid groupBy preserved.
+
+**Modified (api-gateway):**
+- `package.json` — added `lru-cache ^10.4.3`. No SDK deps added (`@temporalio/client` deferred; Langfuse via HttpService).
+- `src/app.module.ts` — registers `AuditDashboardModule`.
+
+**New files (frontend):**
+- `lib/api/audit.ts` — typed `fetchBidAudit`, `fetchSummary`, `downloadCsv` (blob + `<a download>`), `buildCsvUrl` helper.
+- `components/audit/cost-chart.tsx` — dual recharts panel: daily `BarChart` + per-agent `PieChart`. Tolerates empty data with placeholder copy.
+- `components/audit/decision-trail.tsx` — flat table of audit rows, status-code coloured (≥500 red, ≥400 amber, 2xx emerald).
+- `components/audit/audit-timeline.tsx` — interleaves decisions + Temporal events on a vertical track, chronological.
+- `components/audit/workflow-history-view.tsx` — `<details>` collapsibles per event; empty state shows the warning from the server response.
+- `app/(authed)/audit/page.tsx` — cross-bid dashboard: filters form (`from`/`to`/`status`/`profile`/`client`), 4 KPI cards, cost chart, decision trail, warnings banner, CSV export button. TanStack Query with `staleTime: 60s`.
+- `app/(authed)/audit/[bidId]/page.tsx` — per-bid detail: 4 KPI cards, timeline, side-by-side decision trail + workflow history.
+- `__tests__/audit-dashboard.test.tsx` — 8 vitest cases (4 page render + 2 DecisionTrail + 2 WorkflowHistoryView) with a `vi.mock('recharts', ...)` passthrough so jsdom doesn't choke on ResizeObserver.
+
+**Modified (frontend):**
+- `package.json` — added `recharts ^2.15.0`.
+- `components/layout/sidebar.tsx` — new `Audit` nav item, hidden when `roles` lacks `admin`.
+
+**Contract tables:**
+
+| Endpoint | Roles | Query | Response |
+|---|---|---|---|
+| `GET /bids/:id/audit` | admin, bid_manager, qc | `:id` UUID | `BidAuditDetail` |
+| `GET /dashboard/audit` | admin | `from/to/role/status/profile/client/page/limit` | `DashboardSummary` |
+| `GET /dashboard/audit.csv` | admin | same filters | `text/csv` string |
+| `GET /dashboard/costs` | admin | `from/to/groupBy=agent\|bid\|state` | `CostsResponse` |
+
+**Tests at delivery:**
+- api-gateway jest: **178 passed / 12 suites** (+17 from 3.2b baseline: 10 service + 7 controller). Build + tsc clean.
+- frontend vitest: **81 passed / 14 suites** (+8 audit-dashboard). `tsc --noEmit` clean. `next build` emits `/audit` 109 kB + `/audit/[bidId]` 4.2 kB. First Load JS shared 87.4 kB (no regression — recharts ships only on `/audit`).
+- ai-service pytest: **10 ACL cases** unchanged (no Python edits this phase).
+- `docker compose config` parses.
+
+**Plan → delivery deviations (locked in code):**
+- Temporal aggregator shipped as a stub. Plan called for `@temporalio/client`-based `ListWorkflowExecutions` + history walk. Host has no Docker + the dep is heavy; stub pattern keeps the interface stable so Phase 3.6 (K8s) is a drop-in. Per-bid page shows the warning in a `<div role="alert">` placeholder.
+- Langfuse integration uses plain `HttpService` + REST, not the `langfuse-node` SDK. Same data, one fewer dep, tests mock the aggregator directly.
+- Per-bid cost lookup in the cross-bid summary (`topBids[].costUsd`) is left at 0 — a real per-bid breakdown requires N upstream Langfuse queries per summary render. Plan accepted this as deferrable.
+- `groupBy=bid|state` on `/dashboard/costs` returns empty buckets + warning. Agent grouping is the operational default; other slices land when ops request them.
+
+**Carry-forward (needs Docker + creds):**
+- Live smoke: boot stack with `LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY` set, drive a bid, open `/audit/<bidId>`, verify `decisionTrail` populated + `costs.totalUsd > 0` + `warnings` only contains the Temporal stub note.
+- Full `pytest` regression (temporalio + jinja2 + anthropic + langgraph) — unchanged from Phase 3.2b carry-forward.
+- Temporal Visibility integration in Phase 3.6 (swap the stub for a gRPC client bound to the in-cluster Temporal frontend).
+- Per-bid cost per N-query fanout (can add with server-side cache).
+
+**Known gotchas introduced:**
+- `recharts` in jsdom throws on `ResizeObserver`. `audit-dashboard.test.tsx` declares `vi.mock('recharts', ...)` returning passthrough components so the chart panels can render without crashing; assertions still verify labels + KPI numbers that live outside the charts.
+- `downloadCsv` fetches the CSV via blob (not `window.open`) so the Bearer token rides along. A vitest case covers that the button calls into the helper.
+- Audit endpoint uses global `AuditInterceptor` already, which means every hit to `/dashboard/audit` writes its own `audit_log` row — intentional; dashboard use is itself audited.
 
 ### Phase 3.2b Delivery — Conv-9 solo (2026-04-25)
 **Scope:** per-artifact RBAC (Python `workflows/acl.py` as single source of truth, NestJS reads via `/acl/artifacts`), global `AuditInterceptor` writing one row per role-gated HTTP request, TypeORM `bids` migration closing the Phase 1 in-memory Map gap. No external deps, $0 cost. Conv-9 solo.
