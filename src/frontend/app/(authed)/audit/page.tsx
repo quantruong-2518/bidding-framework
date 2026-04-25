@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { AdminGate } from '@/components/layout/admin-gate';
 import { CostChart } from '@/components/audit/cost-chart';
 import { DecisionTrail } from '@/components/audit/decision-trail';
 import {
@@ -37,6 +38,14 @@ function defaultRange(): { from: string; to: string } {
  * TanStack Query with `staleTime: 60_000` so a tab switch doesn't re-fetch.
  */
 export default function AuditPage(): React.ReactElement {
+  return (
+    <AdminGate>
+      <AuditPageContent />
+    </AdminGate>
+  );
+}
+
+function AuditPageContent(): React.ReactElement {
   const initial = defaultRange();
   const [filters, setFilters] = React.useState<SummaryFilters>(initial);
   const [pending, setPending] = React.useState<SummaryFilters>(initial);

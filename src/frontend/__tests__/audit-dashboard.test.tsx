@@ -7,6 +7,12 @@ import { DecisionTrail } from '@/components/audit/decision-trail';
 import { WorkflowHistoryView } from '@/components/audit/workflow-history-view';
 import * as auditApi from '@/lib/api/audit';
 import type { DashboardSummary } from '@/lib/api/audit';
+import { useAuthStore } from '@/lib/auth/store';
+
+// `next/navigation` is mocked so AdminGate's `router.replace` doesn't blow up.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+}));
 
 vi.mock('recharts', async () => {
   const React = await import('react');
@@ -65,11 +71,20 @@ function Wrapper({ children }: { children: React.ReactNode }): React.ReactElemen
 
 describe('AuditPage', () => {
   beforeEach(() => {
+    // AdminGate now wraps the page; seed an admin user so the gate
+    // renders the children rather than the "redirecting" placeholder.
+    useAuthStore.setState({
+      hydrated: true,
+      accessToken: 'stub-token',
+      user: { sub: 'kc-1', username: 'admin', roles: ['admin'] },
+    });
     vi.spyOn(auditApi, 'fetchSummary').mockResolvedValue(SUMMARY);
     vi.spyOn(auditApi, 'downloadCsv').mockResolvedValue();
   });
 
   afterEach(() => {
+    useAuthStore.getState().clearAuth();
+    useAuthStore.setState({ hydrated: false });
     vi.restoreAllMocks();
   });
 
