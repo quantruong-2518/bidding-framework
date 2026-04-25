@@ -5,12 +5,18 @@
 
 ## Last Updated: 2026-04-25 (Phase 3.3 delivered + post-review hardening — 289 tests green, ACL drift guarded)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened) COMPLETE — next = Phase 3.4 retrospective OR Conv-8c real-LLM smoke
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened) COMPLETE — code-only $0 work exhausted; next branch picks one external resource
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-11 (Phase 3.4) OR Conv-8c (real-LLM smoke).** Two options:
-- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Also populates the 3.3 audit dashboard end-to-end. Closes Phase 2.2 + 3.5 + 3.2b + 3.3 Docker carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
-- **Phase 3.4 (Conv-11):** Real S11 retrospective + kb-vault multi-tenant isolation. Plan in `memory/project_phase_3_4_detailed_plan.md`. ~$0.01–0.05/bid, needs ANTHROPIC_API_KEY.
+**Open `memory/project_next_steps_post_conv10.md` first** — it has the branch picker, preconditions, acceptance criteria, and a code-only tactical-cleanup option for when no resources are available.
+
+**Quick decision tree:**
+- ✅ `ANTHROPIC_API_KEY` + Docker → **Conv-8c** (40 min, ~$0.10, closes 4 carry-forwards: Phase 2.2 real-LLM + 3.5 Langfuse + 3.2b live + 3.3 live).
+- ✅ `ANTHROPIC_API_KEY` only (no Docker) → design work for Conv-11 Phase 3.4 (real S11 retrospective + multi-tenant Qdrant); LLM-needing parts blocked.
+- ✅ K8s cluster + k6 runner → **Conv-12** (Phase 3.6 + 3.7 — Helm + load test).
+- ❌ None of the above → **tactical cleanup commit**: per-bid cost fanout in `recentBids`, silent token refresh + logout UI, frontend `/audit` admin gate, `.env.example` rebuild. Three to four batch into one commit; no one of them blocks pilot.
+
+**Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` — three commits, 65 files, +6 359 LOC across Phase 3.2b + 3.3 + post-review hardening. 18 pytest / 190 jest / 81 vitest. No phase ships unverified at the unit level; Docker smokes are the carry-forward.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
