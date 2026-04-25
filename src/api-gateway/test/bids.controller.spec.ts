@@ -31,10 +31,10 @@ describe('BidsController', () => {
   beforeEach(async () => {
     const mock: Partial<jest.Mocked<BidsService>> = {
       create: jest.fn().mockResolvedValue(fixture),
-      findAll: jest.fn().mockReturnValue([fixture]),
-      findOne: jest.fn().mockReturnValue(fixture),
-      update: jest.fn().mockReturnValue(fixture),
-      remove: jest.fn(),
+      findAll: jest.fn().mockResolvedValue([fixture]),
+      findOne: jest.fn().mockResolvedValue(fixture),
+      update: jest.fn().mockResolvedValue(fixture),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
 
     const linkMock: Partial<jest.Mocked<LangfuseLinkService>> = {
@@ -74,23 +74,23 @@ describe('BidsController', () => {
     expect(service.create).toHaveBeenCalledWith(dto, 'alice');
   });
 
-  it('lists bids', () => {
-    expect(controller.list()).toEqual([fixture]);
+  it('lists bids', async () => {
+    await expect(controller.list()).resolves.toEqual([fixture]);
   });
 
-  it('fetches a bid by id', () => {
-    expect(controller.findOne(fixture.id)).toEqual(fixture);
+  it('fetches a bid by id', async () => {
+    await expect(controller.findOne(fixture.id)).resolves.toEqual(fixture);
     expect(service.findOne).toHaveBeenCalledWith(fixture.id);
   });
 
-  it('updates a bid', () => {
+  it('updates a bid', async () => {
     const update: UpdateBidDto = { status: BidStatus.TRIAGED };
-    expect(controller.update(fixture.id, update)).toEqual(fixture);
+    await expect(controller.update(fixture.id, update)).resolves.toEqual(fixture);
     expect(service.update).toHaveBeenCalledWith(fixture.id, update);
   });
 
-  it('removes a bid', () => {
-    controller.remove(fixture.id);
+  it('removes a bid', async () => {
+    await controller.remove(fixture.id);
     expect(service.remove).toHaveBeenCalledWith(fixture.id);
   });
 

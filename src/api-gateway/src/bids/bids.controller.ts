@@ -45,12 +45,12 @@ export class BidsController {
   }
 
   @Get()
-  list(): Bid[] {
+  list(): Promise<Bid[]> {
     return this.bidsService.findAll();
   }
 
   @Get(':id')
-  findOne(@Param('id', new ParseUUIDPipe()) id: string): Bid {
+  findOne(@Param('id', new ParseUUIDPipe()) id: string): Promise<Bid> {
     return this.bidsService.findOne(id);
   }
 
@@ -59,14 +59,14 @@ export class BidsController {
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateBidDto,
-  ): Bid {
+  ): Promise<Bid> {
     return this.bidsService.update(id, dto);
   }
 
   @Delete(':id')
   @Roles('admin')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id', new ParseUUIDPipe()) id: string): void {
-    this.bidsService.remove(id);
+  remove(@Param('id', new ParseUUIDPipe()) id: string): Promise<void> {
+    return this.bidsService.remove(id);
   }
 }

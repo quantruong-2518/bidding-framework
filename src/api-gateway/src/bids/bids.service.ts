@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { RedisService } from '../redis/redis.service';
 import { Bid, BidProfile, BidStatus } from './bid.entity';
 import { CreateBidDto } from './create-bid.dto';
@@ -11,84 +12,79 @@ export const BID_STREAM = 'bid.events';
 export class BidsService {
   private readonly logger = new Logger(BidsService.name);
 
-  // in-memory store — replaced in Phase 1.x (Postgres via TypeORM/Prisma)
-  private readonly bids = new Map<string, Bid>();
-
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    @InjectRepository(Bid) private readonly bids: Repository<Bid>,
+    private readonly redis: RedisService,
+  ) {}
 
   async create(dto: CreateBidDto, createdBy: string | undefined): Promise<Bid> {
     const now = new Date().toISOString();
-    const bid: Bid = {
-      id: uuidv4(),
+    const entity = this.bids.create({
       clientName: dto.clientName,
       industry: dto.industry,
       region: dto.region,
       deadline: dto.deadline,
       scopeSummary: dto.scopeSummary,
-      technologyKeywords: dto.technologyKeywords,
+      technologyKeywords: dto.technologyKeywords ?? [],
       estimatedProfile: dto.estimatedProfile ?? BidProfile.M,
       status: BidStatus.DRAFT,
       workflowId: null,
       createdAt: now,
       updatedAt: now,
-    };
-    this.bids.set(bid.id, bid);
+    });
+    const saved = await this.bids.save(entity);
 
     try {
       await this.redis.publishStream(BID_STREAM, {
         event: 'bid.created',
-        bidId: bid.id,
+        bidId: saved.id,
         createdBy: createdBy ?? 'system',
-        payload: bid,
+        payload: saved,
       });
     } catch (err) {
       this.logger.warn(
         `Failed to publish bid.created to stream: ${(err as Error).message}`,
       );
     }
-    return bid;
+    return saved;
   }
 
-  findAll(): Bid[] {
-    return Array.from(this.bids.values());
+  async findAll(): Promise<Bid[]> {
+    return this.bids.find({ order: { createdAt: 'DESC' } });
   }
 
-  findOne(id: string): Bid {
-    const bid = this.bids.get(id);
+  async findOne(id: string): Promise<Bid> {
+    const bid = await this.bids.findOne({ where: { id } });
     if (!bid) {
       throw new NotFoundException(`Bid ${id} not found`);
     }
     return bid;
   }
 
-  findByWorkflowId(workflowId: string): Bid | undefined {
-    for (const bid of this.bids.values()) {
-      if (bid.workflowId === workflowId) return bid;
-    }
-    return undefined;
+  async findByWorkflowId(workflowId: string): Promise<Bid | null> {
+    return this.bids.findOne({ where: { workflowId } });
   }
 
-  update(id: string, dto: UpdateBidDto): Bid {
-    const bid = this.findOne(id);
+  async update(id: string, dto: UpdateBidDto): Promise<Bid> {
+    const bid = await this.findOne(id);
     Object.assign(bid, dto, { updatedAt: new Date().toISOString() });
-    this.bids.set(id, bid);
-    return bid;
+    return this.bids.save(bid);
   }
 
   /**
    * Attach a Temporal workflow id to a bid (set by WorkflowsService after trigger).
    */
-  attachWorkflow(id: string, workflowId: string): Bid {
-    const bid = this.findOne(id);
+  async attachWorkflow(id: string, workflowId: string): Promise<Bid> {
+    const bid = await this.findOne(id);
     bid.workflowId = workflowId;
     bid.status = BidStatus.IN_PROGRESS;
     bid.updatedAt = new Date().toISOString();
-    this.bids.set(id, bid);
-    return bid;
+    return this.bids.save(bid);
   }
 
-  remove(id: string): void {
-    if (!this.bids.delete(id)) {
+  async remove(id: string): Promise<void> {
+    const result = await this.bids.delete(id);
+    if (!result.affected) {
       throw new NotFoundException(`Bid ${id} not found`);
     }
   }

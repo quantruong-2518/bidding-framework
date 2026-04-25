@@ -30,6 +30,14 @@ interface WorkflowStatusResponse {
   [key: string]: unknown;
 }
 
+/** Header used to propagate the caller's roles to ai-service for RBAC filtering. */
+export const X_USER_ROLES_HEADER = 'x-user-roles';
+
+function rolesHeader(roles: readonly string[] | undefined): Record<string, string> {
+  if (!roles || roles.length === 0) return {};
+  return { [X_USER_ROLES_HEADER]: roles.filter(Boolean).join(',') };
+}
+
 @Injectable()
 export class WorkflowsService {
   private readonly logger = new Logger(WorkflowsService.name);
@@ -47,7 +55,7 @@ export class WorkflowsService {
   }
 
   async trigger(bidId: string): Promise<{ bid: Bid; workflow: WorkflowStartResponse }> {
-    const bid = this.bidsService.findOne(bidId);
+    const bid = await this.bidsService.findOne(bidId);
     // Nest-side bids are already structured — hit /start-from-card so the workflow skips S0.
     const url = `${this.baseUrl()}/workflows/bid/start-from-card`;
     const body = {
@@ -63,7 +71,7 @@ export class WorkflowsService {
     };
 
     const response = await this.request<WorkflowStartResponse>('POST', url, body);
-    const updated = this.bidsService.attachWorkflow(bid.id, response.workflow_id);
+    const updated = await this.bidsService.attachWorkflow(bid.id, response.workflow_id);
     return { bid: updated, workflow: response };
   }
 
@@ -71,7 +79,7 @@ export class WorkflowsService {
     bidId: string,
     signal: TriageSignalDto,
   ): Promise<{ status: string }> {
-    const workflowId = this.requireWorkflowId(bidId);
+    const workflowId = await this.requireWorkflowId(bidId);
     const url = `${this.baseUrl()}/workflows/bid/${encodeURIComponent(workflowId)}/triage-signal`;
     const body = {
       approved: signal.approved,
@@ -93,9 +101,10 @@ export class WorkflowsService {
   async sendReviewSignal(
     bidId: string,
     signal: ReviewSignalDto,
+    roles: readonly string[] = [],
   ): Promise<{ status: string }> {
-    const workflowId = this.requireWorkflowId(bidId);
-    const status = await this.getStatus(bidId);
+    const workflowId = await this.requireWorkflowId(bidId);
+    const status = await this.getStatus(bidId, roles);
     const state = (status.current_state as string | undefined) ?? status.state;
     if (state && state !== 'S9') {
       throw new ConflictException(
@@ -118,18 +127,25 @@ export class WorkflowsService {
     return this.request<{ status: string }>('POST', url, body);
   }
 
-  async getStatus(bidId: string): Promise<WorkflowStatusResponse> {
-    const workflowId = this.requireWorkflowId(bidId);
+  async getStatus(
+    bidId: string,
+    roles: readonly string[] = [],
+  ): Promise<WorkflowStatusResponse> {
+    const workflowId = await this.requireWorkflowId(bidId);
     const url = `${this.baseUrl()}/workflows/bid/${encodeURIComponent(workflowId)}`;
-    return this.request<WorkflowStatusResponse>('GET', url);
+    return this.request<WorkflowStatusResponse>('GET', url, undefined, roles);
   }
 
   /**
    * Return the named artifact field from the current workflow state snapshot.
    * The authoritative list of keys is defined in `ARTIFACT_KEYS` on the controller.
    */
-  async getArtifact(bidId: string, key: string): Promise<unknown> {
-    const status = await this.getStatus(bidId);
+  async getArtifact(
+    bidId: string,
+    key: string,
+    roles: readonly string[] = [],
+  ): Promise<unknown> {
+    const status = await this.getStatus(bidId, roles);
     if (!Object.prototype.hasOwnProperty.call(status, key)) {
       throw new NotFoundException(
         `Artifact '${key}' is not present on bid ${bidId}.`,
@@ -144,8 +160,8 @@ export class WorkflowsService {
     return value;
   }
 
-  private requireWorkflowId(bidId: string): string {
-    const bid = this.bidsService.findOne(bidId);
+  private async requireWorkflowId(bidId: string): Promise<string> {
+    const bid = await this.bidsService.findOne(bidId);
     if (!bid.workflowId) {
       throw new NotFoundException(`Bid ${bidId} has no active workflow.`);
     }
@@ -156,12 +172,14 @@ export class WorkflowsService {
     method: 'GET' | 'POST',
     url: string,
     body?: Record<string, unknown>,
+    roles: readonly string[] = [],
   ): Promise<T> {
+    const headers = rolesHeader(roles);
     try {
       const response: AxiosResponse<T> = await firstValueFrom(
         method === 'GET'
-          ? this.http.get<T>(url, { timeout: 10_000 })
-          : this.http.post<T>(url, body, { timeout: 10_000 }),
+          ? this.http.get<T>(url, { timeout: 10_000, headers })
+          : this.http.post<T>(url, body, { timeout: 10_000, headers }),
       );
       return response.data;
     } catch (err) {

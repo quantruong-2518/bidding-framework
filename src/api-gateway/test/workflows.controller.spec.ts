@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { of } from 'rxjs';
 import type { AxiosResponse } from 'axios';
+import { AclService } from '../src/acl/acl.service';
 import { BidsService } from '../src/bids/bids.service';
 import { BidProfile, BidStatus, type Bid } from '../src/bids/bid.entity';
 import { WorkflowsController } from '../src/workflows/workflows.controller';
@@ -15,11 +16,20 @@ import {
   ReviewVerdict,
   ReviewerRole,
 } from '../src/workflows/review-signal.dto';
+import type { AuthenticatedUser } from '../src/auth/current-user.decorator';
+
+const adminUser: AuthenticatedUser = {
+  sub: 'kc-admin',
+  username: 'admin',
+  email: 'a@b.c',
+  roles: ['admin'],
+};
 
 describe('WorkflowsController', () => {
   let controller: WorkflowsController;
   let http: { post: jest.Mock; get: jest.Mock };
   let bidsService: { findOne: jest.Mock; attachWorkflow: jest.Mock };
+  let aclService: { assertVisible: jest.Mock };
 
   const baseBid: Bid = {
     id: '11111111-1111-1111-1111-111111111111',
@@ -48,8 +58,12 @@ describe('WorkflowsController', () => {
   beforeEach(async () => {
     http = { post: jest.fn(), get: jest.fn() };
     bidsService = {
-      findOne: jest.fn().mockReturnValue(baseBid),
-      attachWorkflow: jest.fn().mockReturnValue({ ...baseBid, workflowId: 'wf-1' }),
+      findOne: jest.fn().mockResolvedValue(baseBid),
+      attachWorkflow: jest.fn().mockResolvedValue({ ...baseBid, workflowId: 'wf-1' }),
+    };
+    aclService = {
+      // Admin is the default user in these specs → always visible.
+      assertVisible: jest.fn(),
     };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -62,6 +76,7 @@ describe('WorkflowsController', () => {
           useValue: { get: (k: string) => (k === 'AI_SERVICE_URL' ? 'http://ai:8001' : undefined) },
         },
         { provide: BidsService, useValue: bidsService },
+        { provide: AclService, useValue: aclService },
       ],
     }).compile();
 
@@ -88,7 +103,7 @@ describe('WorkflowsController', () => {
   });
 
   it('POST triage-signal proxies to the correct workflow url', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     http.post.mockReturnValue(of(okResponse({ status: 'signalled' })));
     const dto: TriageSignalDto = {
       approved: true,
@@ -110,9 +125,9 @@ describe('WorkflowsController', () => {
   });
 
   it('GET status proxies and returns upstream payload', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     http.get.mockReturnValue(of(okResponse({ workflow_id: 'wf-42', status: 'RUNNING', state: 'S1' })));
-    const status = (await controller.status(baseBid.id)) as { state: string };
+    const status = (await controller.status(baseBid.id, adminUser)) as { state: string };
     expect(http.get).toHaveBeenCalledWith(
       'http://ai:8001/workflows/bid/wf-42',
       expect.any(Object),
@@ -120,8 +135,44 @@ describe('WorkflowsController', () => {
     expect(status.state).toBe('S1');
   });
 
+  it('GET status forwards caller roles via x-user-roles header', async () => {
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
+    http.get.mockReturnValue(of(okResponse({ workflow_id: 'wf-42', state: 'S2' })));
+    const baUser: AuthenticatedUser = {
+      sub: 'kc-ba',
+      username: 'bob',
+      email: 'b@a.c',
+      roles: ['ba', 'qc'],
+    };
+    await controller.status(baseBid.id, baUser);
+    expect(http.get).toHaveBeenCalledWith(
+      'http://ai:8001/workflows/bid/wf-42',
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'x-user-roles': 'ba,qc' }),
+      }),
+    );
+  });
+
+  it('GET artifacts/:type rejects with 403 when role is not in ACL', async () => {
+    const baUser: AuthenticatedUser = {
+      sub: 'kc-ba',
+      username: 'bob',
+      email: 'b@a.c',
+      roles: ['ba'],
+    };
+    aclService.assertVisible.mockImplementation(() => {
+      throw new (require('@nestjs/common').ForbiddenException)(
+        "Role(s) [ba] cannot access artifact 'pricing'.",
+      );
+    });
+    await expect(
+      controller.artifact(baseBid.id, 'pricing', baUser),
+    ).rejects.toThrow(/cannot access artifact 'pricing'/);
+    expect(http.get).not.toHaveBeenCalled();
+  });
+
   it('GET artifacts/:type returns the named artifact', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     const statusPayload = {
       workflow_id: 'wf-42',
       status: 'COMPLETED',
@@ -129,20 +180,20 @@ describe('WorkflowsController', () => {
       wbs: { bid_id: baseBid.id, items: [], total_effort_md: 205, timeline_weeks: 10, critical_path: [] },
     };
     http.get.mockReturnValue(of(okResponse(statusPayload)));
-    const artifact = (await controller.artifact(baseBid.id, 'wbs')) as {
+    const artifact = (await controller.artifact(baseBid.id, 'wbs', adminUser)) as {
       total_effort_md: number;
     };
     expect(artifact.total_effort_md).toBe(205);
   });
 
   it('GET artifacts/:type rejects unknown keys with 400', async () => {
-    await expect(controller.artifact(baseBid.id, 'nope')).rejects.toThrow(
+    await expect(controller.artifact(baseBid.id, 'nope', adminUser)).rejects.toThrow(
       /Unknown artifact type 'nope'/,
     );
   });
 
   it('GET artifacts/:type returns 404 when artifact is null (not yet produced)', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     const statusPayload = {
       workflow_id: 'wf-42',
       status: 'RUNNING',
@@ -150,7 +201,7 @@ describe('WorkflowsController', () => {
       wbs: null,
     };
     http.get.mockReturnValue(of(okResponse(statusPayload)));
-    await expect(controller.artifact(baseBid.id, 'wbs')).rejects.toThrow(
+    await expect(controller.artifact(baseBid.id, 'wbs', adminUser)).rejects.toThrow(
       /has not been produced yet/,
     );
   });
@@ -173,14 +224,14 @@ describe('WorkflowsController', () => {
   };
 
   it('POST review-signal forwards snake_case body when workflow is at S9', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     // Status check (guard) + actual review-signal POST.
     http.get.mockReturnValueOnce(
       of(okResponse({ workflow_id: 'wf-42', current_state: 'S9' })),
     );
     http.post.mockReturnValue(of(okResponse({ status: 'accepted' })));
 
-    await controller.review(baseBid.id, reviewDto);
+    await controller.review(baseBid.id, reviewDto, adminUser);
 
     expect(http.post).toHaveBeenCalledWith(
       'http://ai:8001/workflows/bid/wf-42/review-signal',
@@ -203,18 +254,18 @@ describe('WorkflowsController', () => {
   });
 
   it('POST review-signal returns 409 when workflow has advanced past S9', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     http.get.mockReturnValueOnce(
       of(okResponse({ workflow_id: 'wf-42', current_state: 'S11_DONE' })),
     );
-    await expect(controller.review(baseBid.id, reviewDto)).rejects.toThrow(
+    await expect(controller.review(baseBid.id, reviewDto, adminUser)).rejects.toThrow(
       /S9 review gate already resolved/,
     );
     expect(http.post).not.toHaveBeenCalled();
   });
 
   it('POST review-signal bubbles ai-service 404 as NotFoundException', async () => {
-    bidsService.findOne.mockReturnValue({ ...baseBid, workflowId: 'wf-42' });
+    bidsService.findOne.mockResolvedValue({ ...baseBid, workflowId: 'wf-42' });
     http.get.mockReturnValueOnce(
       of(okResponse({ workflow_id: 'wf-42', current_state: 'S9' })),
     );
@@ -227,7 +278,7 @@ describe('WorkflowsController', () => {
         sub.error(upstreamErr),
       ),
     );
-    await expect(controller.review(baseBid.id, reviewDto)).rejects.toThrow(
+    await expect(controller.review(baseBid.id, reviewDto, adminUser)).rejects.toThrow(
       /workflow gone/,
     );
   });

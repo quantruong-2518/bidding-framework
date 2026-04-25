@@ -1,5 +1,6 @@
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
+import { AclModule } from '../acl/acl.module';
 import { BidsModule } from '../bids/bids.module';
 import { WorkflowsController } from './workflows.controller';
 import { WorkflowsService } from './workflows.service';
@@ -10,6 +11,7 @@ import { WorkflowsService } from './workflows.service';
       timeout: 10_000,
       maxRedirects: 2,
     }),
+    AclModule,
     BidsModule,
   ],
   controllers: [WorkflowsController],

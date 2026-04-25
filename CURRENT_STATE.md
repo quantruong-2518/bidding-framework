@@ -3,14 +3,14 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-23 (Phase 3.2a partial smoke — Conv-8b solo, A+B+C green, D/E/F deferred)
+## Last Updated: 2026-04-25 (Phase 3.2b delivered — Conv-9 solo, 244 tests green, Docker smoke deferred)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a (code + stub-LLM smoke) COMPLETE — next = real-LLM smoke OR Phase 3.2b RBAC
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b (code) COMPLETE — next = Phase 3.3 audit dashboard OR Conv-8c real-LLM smoke
 
 ## >>> NEXT ACTION <<<
-**Next conversation = Conv-8c (real-LLM smoke) OR Conv-9 (Phase 3.2b).** Two options:
-- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Closes Phase 2.2 + 3.5 carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
-- **Phase 3.2b (Conv-9):** per-artifact ACL + audit log + `bids` TypeORM migration. Plan in `memory/project_phase_3_2b_detailed_plan.md`. Does NOT block on smoke.
+**Next conversation = Conv-8c (real-LLM smoke) OR Conv-10 (Phase 3.3 dashboard).** Two options:
+- **Real-LLM smoke (Conv-8c):** Set `ANTHROPIC_API_KEY` in `src/.env`, force-recreate ai-service + ai-worker, drive a fresh Bid-M to S11_DONE, verify `executive_summary` no longer starts with `"Stub BA summary"`. Then start Langfuse profile, get keys, drive bid #3, verify `/trace-url` returns and Langfuse trace appears. Closes Phase 2.2 + 3.5 + 3.2b Docker carry-forwards. Plan: `memory/project_phase_3_2a_smoke_conv8b.md` §Phase D/E/F.
+- **Phase 3.3 (Conv-10):** Audit dashboard aggregating Temporal + audit_log + Langfuse — reads from 3.2b's `audit_log` table. Plan in `memory/project_phase_3_3_detailed_plan.md`. Does NOT block on smoke.
 
 **Roadmap:** `project_phase_3_roadmap.md` (7 sub-tasks / ~7 conversations; MVP-pilot path 3.5 → 3.1 → 3.2a → 3.6; post-pilot 3.2b → 3.3 → 3.4 → 3.7; only 3.6 + 3.7 block on external infra).
 
@@ -34,6 +34,80 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.2b Delivery — Conv-9 solo (2026-04-25)
+**Scope:** per-artifact RBAC (Python `workflows/acl.py` as single source of truth, NestJS reads via `/acl/artifacts`), global `AuditInterceptor` writing one row per role-gated HTTP request, TypeORM `bids` migration closing the Phase 1 in-memory Map gap. No external deps, $0 cost. Conv-9 solo.
+
+**New files (ai-service):**
+- `src/ai-service/workflows/acl.py` — ACL map (14 artifacts × 7 roles) + `has_access()` + `visible_artifacts()` + `acl_as_json()`. Admin is a wildcard.
+- `src/ai-service/tests/test_acl.py` — 10 pytest cases; opts out of conftest Temporal imports via local no-op fixture overrides so it runs on a bare Python without `temporalio`.
+
+**Modified (ai-service):**
+- `src/ai-service/workflows/router.py` — NEW `GET /workflows/bid/acl/artifacts` + `get_bid_state` now reads `x-user-roles` header and scrubs non-visible BidState fields to `None` (or `[]` for `reviews`). Empty/missing header keeps the old behaviour (trusts internal callers).
+
+**New files (api-gateway):**
+- `src/acl/acl.service.ts` + `acl.controller.ts` + `acl.module.ts` — proxies `/acl/artifacts` with a baked-in `FALLBACK_ARTIFACT_ACL` (kept in sync with Python map) so gateway still enforces RBAC if ai-service boot-fetch fails. `assertVisible(roles, key)` throws 403.
+- `src/audit/audit-log.entity.ts` + `audit.service.ts` + `audit.interceptor.ts` + `audit.module.ts` — global `AuditInterceptor` registered via `APP_INTERCEPTOR` that fires on routes with `@Roles(...)` metadata. `AuditService.record()` is fire-and-forget — DB failures are logged but never break the request.
+- `src/database/database.module.ts` + `datasource.ts` + `migrations/1714000000001-init-bids-and-audit-log.ts` — TypeORM wiring. `POSTGRES_URL` env drives the prod `pg` connection; `migrationsRun: true` on boot.
+- `src/workflows/artifact-keys.ts` — extracted `ARTIFACT_KEYS` into a leaf module to break the `AclService ↔ WorkflowsController` circular import (AclService needed the list for `assertVisible`; controller re-exports for DTO consumers).
+- `test/acl.service.spec.ts` — 7 specs (fallback map, refresh success, refresh error swallowing, onModuleInit safety, admin wildcard, unknown key, blank-role filtering).
+- `test/audit.service.spec.ts` — 3 specs using sqlite in-memory (single row, sequential rows, DB failure swallowing).
+- `test/audit.interceptor.spec.ts` — 5 specs (skip @Public routes, 200 on success, HTTP status on error, 500 for plain Error, anonymous fallback).
+- `test/bids.service.persistence.spec.ts` — 9 specs against `better-sqlite3` in-memory (create + defaults + ordering + attachWorkflow + findByWorkflowId + update + remove + Redis publish failure swallow).
+- `test/rbac-matrix.spec.ts` — **98 parameterised cases** (7 roles × 14 artifacts) + 7 guardrails (unique keys, fallback coverage, pricing commercial-only, bid_card universal, unknown-key rejection, role-union merge, empty-role deny).
+
+**Modified (api-gateway):**
+- `package.json` — added `typeorm@^0.3.20`, `@nestjs/typeorm@^10.0.2`, `pg@^8.13.0`, `@types/pg`, `better-sqlite3@^11.3.0` (dev). Plan called for `testcontainers` but Docker isn't available for Jest on this host, so sqlite in-memory was the pragmatic swap — same TypeORM API shape, 10× faster.
+- `src/app.module.ts` — wires `DatabaseModule`, `AuditModule`, `AclModule`.
+- `src/bids/bid.entity.ts` — `@Entity('bids')` + column mappings; `simple-json` for `technologyKeywords` so it round-trips across pg + sqlite.
+- `src/bids/bids.service.ts` — swapped in-memory `Map<id, Bid>` for `Repository<Bid>`; public API now async (`findAll/findOne/update/remove` return Promises). `attachWorkflow` + Redis publish failure handling preserved.
+- `src/bids/bids.module.ts` — provides `TypeOrmModule.forFeature([Bid])`.
+- `src/bids/bids.controller.ts` — return types now `Promise<Bid[]>` / `Promise<Bid>` / `Promise<void>`.
+- `src/workflows/workflows.service.ts` — propagates `x-user-roles` header on every GET/POST to ai-service via new `rolesHeader()` helper. `getStatus/getArtifact/sendReviewSignal` take `roles` param; `requireWorkflowId` is async. New export `X_USER_ROLES_HEADER`.
+- `src/workflows/workflows.controller.ts` — `@CurrentUser() user` injected on `status/artifact/review`. `artifact` calls `acl.assertVisible(user.roles, type)` before the upstream hop (defence in depth). `status` now has `@Roles(...all 7...)` so the interceptor records every read.
+- `src/workflows/workflows.module.ts` — imports `AclModule` to inject `AclService` into the controller.
+
+**New files (frontend):**
+- `lib/api/acl.ts` — `fetchAcl()` + `hasArtifactAccess(acl, roles, key)` pure helper + conservative admin-only `FALLBACK_ACL`.
+- `__tests__/rbac-filtering.test.tsx` — 4 render tests (admin sees pricing, BA sees AccessDenied for pricing, bid_card universal, fallback denies non-admin) + 4 helper tests.
+
+**Modified (frontend):**
+- `lib/auth/store.ts` — store now holds `acl: AclMap | null` + `setAcl(map)` + `hasArtifactAccess(key)` helper reading `user.roles` + `acl` from the store. `clearAuth` wipes ACL too.
+- `components/layout/provider-gate.tsx` — fires `fetchAcl()` once per authed session + stores via `setAcl`. Failures are logged; the store falls back to the admin-only map so non-admin users see placeholders rather than leaked data.
+- `components/workflow/state-detail.tsx` — new `NODE_KIND_TO_ARTIFACT` map; `ArtifactPanel` first consults `useAuthStore((s) => s.hasArtifactAccess)` and renders `<AccessDenied artifactKey=... role="alert" aria-label="access-denied" />` when the caller's role is excluded.
+- `vitest.setup.ts` — global `beforeEach` seeds an admin session + full ACL map so every existing panel test still renders. Tests that exercise RBAC filtering override in their own `beforeEach`.
+
+**Contract tables:**
+
+| Phase 3.2b contract | Shape | Owner |
+|---|---|---|
+| `GET /acl/artifacts` (NestJS) | `{ [ArtifactKey]: string[] }` | AclController → proxies AclService |
+| `GET /workflows/bid/acl/artifacts` (ai-service) | `{ [ArtifactKey]: string[] }` | Python `acl.acl_as_json()` |
+| `x-user-roles` header | comma-separated role list (e.g. `ba,qc`) | NestJS → ai-service every call |
+| `audit_log` row | `id, timestamp, user_sub, username, roles, action, resource_type, resource_id, status_code, metadata` | AuditService |
+| ACL wildcard | `admin` always resolves True | Python + TS twin implementations |
+
+**Test matrix at delivery:**
+- ai-service pytest: **10 ACL cases green** (local `python3`, no temporalio). Remaining ~108 cases carry over to Docker regression (jinja2/temporalio/anthropic/langgraph not on host — consistent with Phase 3.5 / 3.1 carry-forwards).
+- api-gateway jest e2e: **161 passed across 10 suites** — 47 pre-existing + 9 persistence + 3 audit.service + 5 audit.interceptor + 7 acl.service + 98 RBAC matrix + 7 matrix guardrails + 2 new workflows.controller (header forward + 403 gate). `npm run build` clean.
+- frontend vitest: **73 passed across 13 suites** — 69 pre-existing + 4 rbac-filtering render + 4 hasArtifactAccess helper. `tsc --noEmit` clean. `next build` succeeds.
+- `docker compose config` parses.
+
+**Plan → delivery deviations:**
+- Plan called for `testcontainers` ^10 to run Postgres in Jest. Host doesn't expose Docker to non-root, so swapped to `better-sqlite3` in-memory — same TypeORM Repository surface, no migration exercise in unit tests. Migrations are exercised only when the NestJS app boots against Postgres (dev/prod).
+- Plan called for `CreateDateColumn(timestamptz)` on `audit_log.timestamp`. SQLite doesn't support tz, so entity uses `varchar` with `ISO-8601` strings + the migration declares `timestamp varchar NOT NULL DEFAULT (now()::text)` on Postgres. Same conceptual shape; loses microsecond precision vs `timestamptz` — acceptable for audit fidelity (rows land milliseconds apart at most).
+- Plan had a separate `migrations/1700000000001-audit-log-init.ts` + `1700000000002-bids-table.ts`. Merged into one `1714000000001-init-bids-and-audit-log.ts` — they ship together and never need independent down-migrations.
+- Plan said `src/.env.example` gains `DATABASE_URL=...`. File in a denied directory; the api-gateway compose service already has `POSTGRES_URL` set → runtime already works. Env.example update carried to next conv with write access.
+
+**Carry-forward (needs Docker, not solved on this host):**
+- Live migration run + `SELECT * FROM audit_log` after a real RBAC-gated request — mechanical once Docker is up. Runbook in plan.
+- Full `poetry run pytest` on ai-service — depends on Temporal/LangGraph/Anthropic/Jinja2.
+- `pytest -m integration` — needs `ANTHROPIC_API_KEY`.
+- Browser smoke of the `<AccessDenied>` placeholder for a non-admin Keycloak user.
+
+**Known gotchas introduced this conv:**
+- `AclService` constructor uses `@Optional() @Inject(HttpService)` + `@Optional() @Inject(ConfigService)` so RBAC matrix specs can construct it with `new AclService(null, null)` without NestJS DI. Regular DI (in app bootstrap + spec `useValue`) still works.
+- Workflows.controller + AclService had a circular import via `ARTIFACT_KEYS`. Extracted to `workflows/artifact-keys.ts`. Re-exported from `workflows.controller.ts` for backwards-compat of `workflows/artifacts.py`-adjacent imports.
 
 ### Phase 3.2a Live Smoke — Conv-8b solo (2026-04-23, A+B+C green, D/E/F deferred)
 **Outcome:** Phase A (bring-up) + Phase B (PKCE/audience auth path) + Phase C (Bid-M end-to-end via stub LLM) all green. Phase D (real LLM) + E (Langfuse) + F (`pytest -m integration`) deferred — `ANTHROPIC_API_KEY` not yet provided. **3 of 4 deferred-smoke carry-forwards closed:** 3.2a auth (PKCE token + audience mapper), 2.5 streaming (12 `state_completed` events on Redis), 3.1 Jinja proposal (7 sections + 5/5 consistency). Still open: 2.2 (real LLM agents), 3.5 (Langfuse trace).

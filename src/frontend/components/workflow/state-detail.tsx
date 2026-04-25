@@ -8,11 +8,13 @@ import {
   nodeKindToState,
 } from '@/lib/utils/state-palette';
 import type { WorkflowStatus } from '@/lib/api/types';
+import type { ArtifactKey } from '@/lib/api/acl';
 import type {
   AgentName,
   AgentStreamState,
 } from '@/lib/ws/use-bid-events';
 import { AgentStreamPanel } from '@/components/workflow/agent-stream-panel';
+import { useAuthStore } from '@/lib/auth/store';
 
 interface StateDetailProps {
   selected: NodeKind | null;
@@ -24,6 +26,24 @@ const NODE_KIND_TO_AGENT: Partial<Record<NodeKind, AgentName>> = {
   S3a: 'ba',
   S3b: 'sa',
   S3c: 'domain',
+};
+
+/** Phase 3.2b — maps a node kind to the artifact key used for RBAC filtering. */
+const NODE_KIND_TO_ARTIFACT: Partial<Record<NodeKind, ArtifactKey>> = {
+  S0: 'bid_card',
+  S1: 'triage',
+  S2: 'scoping',
+  S3a: 'ba_draft',
+  S3b: 'sa_draft',
+  S3c: 'domain_notes',
+  S4: 'convergence',
+  S5: 'hld',
+  S6: 'wbs',
+  S7: 'pricing',
+  S8: 'proposal_package',
+  S9: 'reviews',
+  S10: 'submission',
+  S11: 'retrospective',
 };
 
 /** Right-pane info box shown next to the workflow graph. */
@@ -88,6 +108,12 @@ function ArtifactPanel({
   selected: NodeKind;
   status?: WorkflowStatus;
 }): React.ReactElement {
+  const artifactKey = NODE_KIND_TO_ARTIFACT[selected];
+  const hasArtifactAccess = useAuthStore((s) => s.hasArtifactAccess);
+  if (artifactKey && !hasArtifactAccess(artifactKey)) {
+    return <AccessDenied artifactKey={artifactKey} />;
+  }
+
   if (selected === 'S0') return <BidCardPanel status={status} />;
   if (selected === 'S1') return <TriagePanel status={status} />;
   if (selected === 'S2') return <ScopingPanel status={status} />;
@@ -103,6 +129,27 @@ function ArtifactPanel({
   if (selected === 'S10') return <SubmissionPanel status={status} />;
   if (selected === 'S11') return <RetrospectivePanel status={status} />;
   return <Empty label={selected} />;
+}
+
+function AccessDenied({
+  artifactKey,
+}: {
+  artifactKey: ArtifactKey;
+}): React.ReactElement {
+  return (
+    <div
+      role="alert"
+      aria-label="access-denied"
+      className="rounded border border-dashed border-muted-foreground/40 bg-muted/30 p-3 text-xs text-muted-foreground"
+    >
+      <p className="font-semibold uppercase tracking-wide">Access restricted</p>
+      <p className="mt-1">
+        Your role cannot view the{' '}
+        <span className="font-mono">{artifactKey}</span> artifact. Contact a
+        bid manager if you believe this is incorrect.
+      </p>
+    </div>
+  );
 }
 
 function Empty({ label }: { label: string }): React.ReactElement {

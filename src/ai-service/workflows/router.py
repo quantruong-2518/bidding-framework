@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 
 from config.temporal import get_settings, get_temporal_client
 from parsers import docx_adapter, pypdf_adapter, rfp_extractor
 from parsers.models import ParseResponse
+from workflows.acl import acl_as_json, has_access
 from workflows.models import (
     BidCard,
     BidState,
@@ -19,6 +20,33 @@ from workflows.models import (
     IntakeInput,
     StartWorkflowResponse,
 )
+
+# BidState fields that are role-gated. `bid_card` is in every ACL so it is
+# effectively always visible, but still listed so the filter is exhaustive.
+_ACL_GATED_FIELDS: tuple[str, ...] = (
+    "bid_card",
+    "triage",
+    "scoping",
+    "ba_draft",
+    "sa_draft",
+    "domain_notes",
+    "convergence",
+    "hld",
+    "wbs",
+    "pricing",
+    "proposal_package",
+    "reviews",
+    "submission",
+    "retrospective",
+)
+
+
+def _parse_roles_header(raw: str | None) -> list[str]:
+    """Split the trusted ``x-user-roles`` header into a deduped role list."""
+
+    if not raw:
+        return []
+    return [r.strip() for r in raw.split(",") if r.strip()]
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +165,43 @@ async def parse_rfp(file: UploadFile = File(...)) -> ParseResponse:
     return response
 
 
+@router.get("/acl/artifacts")
+async def get_artifact_acl() -> dict[str, list[str]]:
+    """Return the artifact-key → allowed-role map.
+
+    Public (auth-enforced upstream in NestJS). The frontend caches the response
+    after login so every dashboard render can filter panels client-side without
+    a round-trip.
+    """
+
+    return acl_as_json()
+
+
 @router.get("/{workflow_id}", response_model=BidState)
-async def get_bid_state(workflow_id: str) -> BidState:
-    """Query the workflow for its latest BidState snapshot."""
+async def get_bid_state(
+    workflow_id: str,
+    x_user_roles: str | None = Header(default=None, alias="x-user-roles"),
+) -> BidState:
+    """Query the workflow for its latest BidState snapshot.
+
+    When ``x-user-roles`` is supplied by the api-gateway, role-gated artifact
+    fields not visible to the caller are scrubbed to ``None`` (or ``[]`` for
+    ``reviews``) before the snapshot is returned. Missing header → no filter
+    (trusts internal callers).
+    """
+
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
     try:
-        return await handle.query("get_state")
+        state: BidState = await handle.query("get_state")
     except Exception as exc:  # noqa: BLE001
         logger.exception("query.error workflow=%s", workflow_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    roles = _parse_roles_header(x_user_roles)
+    if roles:
+        for field in _ACL_GATED_FIELDS:
+            if not has_access(roles, field):
+                empty: object = [] if field == "reviews" else None
+                setattr(state, field, empty)
+    return state
