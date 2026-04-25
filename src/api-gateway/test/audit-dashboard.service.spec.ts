@@ -319,6 +319,79 @@ describe('AuditDashboardService.getSummary', () => {
       service.getSummary({ from: 'bad-date', to: '2026-04-30' }),
     ).rejects.toThrow(/invalid date range/);
   });
+
+  it('fans out per-bid cost into recentBids when Langfuse is configured', async () => {
+    const { service, bids, langfuse } = buildService();
+    bids.findAll.mockResolvedValue([
+      { id: 'bid-1', clientName: 'ACME', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', status: 'IN_PROGRESS', workflowId: null, createdAt: '2026-04-10T00:00:00.000Z', updatedAt: '2026-04-10T00:00:00.000Z' },
+      { id: 'bid-2', clientName: 'Globex', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', status: 'IN_PROGRESS', workflowId: null, createdAt: '2026-04-11T00:00:00.000Z', updatedAt: '2026-04-11T00:00:00.000Z' },
+    ] as never);
+    langfuse.isConfigured.mockReturnValue(true);
+    langfuse.forBid.mockImplementation(async (bidId: string) => ({
+      costs: {
+        totalUsd: bidId === 'bid-1' ? 1.25 : 0.4,
+        byAgent: {},
+        byModel: {},
+        generationCount: 1,
+        latencyP95Ms: 0,
+      },
+    }));
+
+    const summary = await service.getSummary({
+      from: '2026-04-01',
+      to: '2026-04-30',
+    });
+    expect(summary.recentBids).toHaveLength(2);
+    expect(summary.recentBids[0]).toMatchObject({ bidId: 'bid-1', costUsd: 1.25 });
+    expect(summary.recentBids[1]).toMatchObject({ bidId: 'bid-2', costUsd: 0.4 });
+    expect(langfuse.forBid).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedupes per-bid Langfuse warnings and still returns every bid', async () => {
+    const { service, bids, langfuse } = buildService();
+    bids.findAll.mockResolvedValue([
+      { id: 'bid-1', clientName: 'ACME', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', status: 'IN_PROGRESS', workflowId: null, createdAt: '2026-04-10T00:00:00.000Z', updatedAt: '2026-04-10T00:00:00.000Z' },
+      { id: 'bid-2', clientName: 'Globex', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', status: 'IN_PROGRESS', workflowId: null, createdAt: '2026-04-11T00:00:00.000Z', updatedAt: '2026-04-11T00:00:00.000Z' },
+    ] as never);
+    langfuse.isConfigured.mockReturnValue(true);
+    langfuse.forBid.mockResolvedValue({
+      costs: {
+        totalUsd: 0,
+        byAgent: {},
+        byModel: {},
+        generationCount: 0,
+        latencyP95Ms: 0,
+      },
+      warning: 'Langfuse aggregation failed: connect ECONNREFUSED',
+    });
+
+    const summary = await service.getSummary({
+      from: '2026-04-01',
+      to: '2026-04-30',
+    });
+    expect(summary.recentBids).toHaveLength(2);
+    expect(summary.recentBids.every((b) => b.costUsd === 0)).toBe(true);
+    const dupes = summary.warnings.filter(
+      (w) => w === 'Langfuse aggregation failed: connect ECONNREFUSED',
+    );
+    expect(dupes).toHaveLength(1);
+  });
+
+  it('skips per-bid fanout when Langfuse is unconfigured (recentBids costUsd=0)', async () => {
+    const { service, bids, langfuse } = buildService();
+    bids.findAll.mockResolvedValue([
+      { id: 'bid-1', clientName: 'ACME', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', status: 'IN_PROGRESS', workflowId: null, createdAt: '2026-04-10T00:00:00.000Z', updatedAt: '2026-04-10T00:00:00.000Z' },
+    ] as never);
+    // default mock: isConfigured returns false
+    const summary = await service.getSummary({
+      from: '2026-04-01',
+      to: '2026-04-30',
+    });
+    expect(summary.recentBids).toEqual([
+      { bidId: 'bid-1', clientName: 'ACME', status: 'IN_PROGRESS', costUsd: 0 },
+    ]);
+    expect(langfuse.forBid).not.toHaveBeenCalled();
+  });
 });
 
 describe('AuditDashboardService.summaryToCsv', () => {

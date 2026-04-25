@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { BidsService } from '../bids/bids.service';
 import { AuditLogAggregator } from './aggregators/audit-log.aggregator';
-import { LangfuseAggregator } from './aggregators/langfuse.aggregator';
+import { LangfuseAggregator, chunkedMap } from './aggregators/langfuse.aggregator';
 import { TemporalAggregator } from './aggregators/temporal.aggregator';
 import { TtlCache } from './cache';
 import type {
@@ -203,14 +203,34 @@ export class AuditDashboardService {
         bidCount: filtered.filter((b) => b.createdAt.startsWith(date)).length,
       }));
 
-      // Newest-first sample; no per-bid cost fanout (deferred).
-      const recentBids = filtered
-        .slice(0, 10)
-        .map((b) => ({
+      // Newest-first sample. When Langfuse is configured we fan out
+      // `forBid` for each so the dashboard can show honest per-bid cost
+      // (the field used to be hard-coded to 0 — see `project_phase_3_3_delivered`).
+      // Concurrency 5 is plenty for 10 bids and well under the
+      // `aggregateRange` cap of 10 used for the cross-bid sweep.
+      // Per-bid warnings are deduped: one upstream outage shouldn't
+      // produce 10 identical strings.
+      const recentSample = filtered.slice(0, 10);
+      let recentBids: DashboardSummary['recentBids'];
+      if (this.langfuse.isConfigured()) {
+        recentBids = await chunkedMap(recentSample, 5, async (b) => {
+          const { costs, warning } = await this.langfuse.forBid(b.id);
+          if (warning && !warnings.includes(warning)) warnings.push(warning);
+          return {
+            bidId: b.id,
+            clientName: b.clientName,
+            status: b.status,
+            costUsd: costs.totalUsd,
+          };
+        });
+      } else {
+        recentBids = recentSample.map((b) => ({
           bidId: b.id,
           clientName: b.clientName,
           status: b.status,
+          costUsd: 0,
         }));
+      }
 
       // Drop dashboard self-reads from the "recent decisions" feed — admins
       // hitting the dashboard shouldn't see themselves pinging it.

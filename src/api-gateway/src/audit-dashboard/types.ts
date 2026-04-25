@@ -84,9 +84,16 @@ export interface DashboardSummary {
     domain: number;
   };
   byDay: Array<{ date: string; bidCount: number; costUsd: number }>;
-  /** Newest-first sample (up to 10) — not a top-by-cost ranking; cost
-   * fanout is deferred to a follow-up. */
-  recentBids: Array<{ bidId: string; clientName: string; status: string }>;
+  /** Newest-first sample (up to 10). `costUsd` is fanned out per bid via
+   * Langfuse when configured; defaults to 0 when Langfuse is unwired or
+   * the per-bid lookup fails (lookup failure surfaces in `warnings[]`
+   * with a single dedup'd entry, not one per bid). */
+  recentBids: Array<{
+    bidId: string;
+    clientName: string;
+    status: string;
+    costUsd: number;
+  }>;
   recentDecisions: Array<
     DecisionTrailEntry & { bidId: string | null }
   >;
