@@ -1,0 +1,94 @@
+{
+  "ba_draft": [
+    "admin",
+    "ba",
+    "bid_manager",
+    "qc"
+  ],
+  "bid_card": [
+    "admin",
+    "ba",
+    "bid_manager",
+    "domain_expert",
+    "qc",
+    "sa",
+    "solution_lead"
+  ],
+  "convergence": [
+    "admin",
+    "bid_manager",
+    "qc",
+    "solution_lead"
+  ],
+  "domain_notes": [
+    "admin",
+    "bid_manager",
+    "domain_expert",
+    "qc"
+  ],
+  "hld": [
+    "admin",
+    "bid_manager",
+    "qc",
+    "sa",
+    "solution_lead"
+  ],
+  "pricing": [
+    "admin",
+    "bid_manager",
+    "qc"
+  ],
+  "proposal_package": [
+    "admin",
+    "bid_manager",
+    "qc"
+  ],
+  "retrospective": [
+    "admin",
+    "ba",
+    "bid_manager",
+    "domain_expert",
+    "qc",
+    "sa",
+    "solution_lead"
+  ],
+  "reviews": [
+    "admin",
+    "bid_manager",
+    "domain_expert",
+    "qc",
+    "sa",
+    "solution_lead"
+  ],
+  "sa_draft": [
+    "admin",
+    "bid_manager",
+    "qc",
+    "sa",
+    "solution_lead"
+  ],
+  "scoping": [
+    "admin",
+    "ba",
+    "bid_manager",
+    "qc",
+    "sa"
+  ],
+  "submission": [
+    "admin",
+    "bid_manager",
+    "qc"
+  ],
+  "triage": [
+    "admin",
+    "bid_manager",
+    "qc"
+  ],
+  "wbs": [
+    "admin",
+    "ba",
+    "bid_manager",
+    "qc",
+    "sa"
+  ]
+}

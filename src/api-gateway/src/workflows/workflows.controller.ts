@@ -13,6 +13,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, type AuthenticatedUser } from '../auth/current-user.decorator';
 import { AclService } from '../acl/acl.service';
+import { SkipAudit } from '../audit/skip-audit.decorator';
 import { ARTIFACT_KEYS, type ArtifactKey } from './artifact-keys';
 import { WorkflowsService } from './workflows.service';
 import { TriageSignalDto } from './triage-signal.dto';
@@ -64,6 +65,7 @@ export class WorkflowsController {
 
   @Get('status')
   @Roles('admin', 'bid_manager', 'ba', 'sa', 'qc', 'domain_expert', 'solution_lead')
+  @SkipAudit()
   status(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: AuthenticatedUser | undefined,

@@ -140,6 +140,45 @@ describe('AuditDashboardService.getBidDetail', () => {
     );
   });
 
+  it('reports completedAt + duration only for WON/LOST bids', async () => {
+    const { service, bids } = buildService();
+    bids.findOne.mockResolvedValueOnce({
+      id: 'bid-1',
+      clientName: 'ACME',
+      industry: '',
+      region: '',
+      deadline: '',
+      scopeSummary: '',
+      technologyKeywords: [],
+      estimatedProfile: 'M',
+      status: 'WON',
+      workflowId: 'wf-1',
+      createdAt: '2026-04-01T00:00:00.000Z',
+      updatedAt: '2026-04-01T01:30:00.000Z',
+    } as never);
+    const won = await service.getBidDetail('bid-1');
+    expect(won.summary.completedAt).toBe('2026-04-01T01:30:00.000Z');
+    expect(won.summary.totalDurationMs).toBe(90 * 60 * 1000);
+
+    bids.findOne.mockResolvedValueOnce({
+      id: 'bid-2',
+      clientName: 'ACME',
+      industry: '',
+      region: '',
+      deadline: '',
+      scopeSummary: '',
+      technologyKeywords: [],
+      estimatedProfile: 'M',
+      status: 'IN_PROGRESS',
+      workflowId: 'wf-2',
+      createdAt: '2026-04-01T00:00:00.000Z',
+      updatedAt: '2026-04-01T01:30:00.000Z',
+    } as never);
+    const inProgress = await service.getBidDetail('bid-2');
+    expect(inProgress.summary.completedAt).toBeNull();
+    expect(inProgress.summary.totalDurationMs).toBeNull();
+  });
+
   it('caches the response within the TTL', async () => {
     const { service, auditLogs } = buildService();
     auditLogs.forBid.mockResolvedValue([]);
@@ -213,6 +252,52 @@ describe('AuditDashboardService.getSummary', () => {
     expect(summary.recentDecisions[0]?.bidId).toBe('bid-1');
   });
 
+  it('drops dashboard self-reads from the recent-decisions feed', async () => {
+    const { service, auditLogs } = buildService();
+    auditLogs.recent.mockResolvedValue([
+      {
+        timestamp: '2026-04-10T12:00:00.000Z',
+        action: 'GET /dashboard/audit',
+        actor: { userSub: 'admin', username: 'admin', roles: ['admin'] },
+        resourceType: 'dashboard',
+        resourceId: null,
+        statusCode: 200,
+        metadata: null,
+      },
+      {
+        timestamp: '2026-04-10T12:01:00.000Z',
+        action: 'POST /bids',
+        actor: { userSub: 'u1', username: 'alice', roles: ['bid_manager'] },
+        resourceType: 'bids',
+        resourceId: 'bid-1',
+        statusCode: 201,
+        metadata: null,
+      },
+    ]);
+    const summary = await service.getSummary({
+      from: '2026-04-01',
+      to: '2026-04-30',
+    });
+    expect(summary.recentDecisions).toHaveLength(1);
+    expect(summary.recentDecisions[0]?.action).toBe('POST /bids');
+  });
+
+  it('counts in-progress as DRAFT + TRIAGED + IN_PROGRESS', async () => {
+    const { service, bids } = buildService();
+    bids.findAll.mockResolvedValue([
+      { id: 'a', status: 'DRAFT', createdAt: '2026-04-10T00:00:00.000Z', clientName: 'A', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', workflowId: null, updatedAt: '2026-04-10T00:00:00.000Z' },
+      { id: 'b', status: 'TRIAGED', createdAt: '2026-04-10T00:00:00.000Z', clientName: 'B', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', workflowId: null, updatedAt: '2026-04-10T00:00:00.000Z' },
+      { id: 'c', status: 'IN_PROGRESS', createdAt: '2026-04-10T00:00:00.000Z', clientName: 'C', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', workflowId: null, updatedAt: '2026-04-10T00:00:00.000Z' },
+      { id: 'd', status: 'WON', createdAt: '2026-04-10T00:00:00.000Z', clientName: 'D', industry: '', region: '', deadline: '', scopeSummary: '', technologyKeywords: [], estimatedProfile: 'M', workflowId: null, updatedAt: '2026-04-10T00:00:00.000Z' },
+    ] as never);
+    const summary = await service.getSummary({
+      from: '2026-04-01',
+      to: '2026-04-30',
+    });
+    expect(summary.totals.inProgress).toBe(3);
+    expect(summary.totals.completed).toBe(1);
+  });
+
   it('propagates warning when Langfuse is unconfigured', async () => {
     const { service, langfuse } = buildService();
     langfuse.aggregateRange.mockResolvedValue({
@@ -241,14 +326,14 @@ describe('AuditDashboardService.summaryToCsv', () => {
     const { service } = buildService();
     const csv = service.summaryToCsv({
       dateRange: { from: '2026-04-01', to: '2026-04-30' },
-      totals: { bids: 3, completed: 1, rejected: 1, blocked: 1 },
-      costUsd: { total: 4.56, avgPerBid: 1.52, p95PerBid: 0 },
+      totals: { bids: 3, completed: 1, rejected: 1, inProgress: 1 },
+      costUsd: { total: 4.56, avgPerBid: 1.52 },
       agentCost: { ba: 1, sa: 2, domain: 1.56 },
       byDay: [
         { date: '2026-04-10', bidCount: 2, costUsd: 3.25 },
         { date: '2026-04-11', bidCount: 1, costUsd: 1.31 },
       ],
-      topBids: [],
+      recentBids: [],
       recentDecisions: [],
       warnings: [],
     });

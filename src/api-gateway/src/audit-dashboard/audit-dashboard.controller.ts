@@ -11,6 +11,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { SkipAudit } from '../audit/skip-audit.decorator';
 import { AuditDashboardService } from './audit-dashboard.service';
 import type {
   BidAuditDetail,
@@ -35,6 +36,7 @@ function parseDateRange(from?: string, to?: string): { from: string; to: string 
 }
 
 @UseGuards(JwtAuthGuard, RolesGuard)
+@SkipAudit() // Dashboard reads are observability, not decisions — muted class-wide to keep audit_log focused on writes.
 @Controller()
 export class AuditDashboardController {
   constructor(private readonly service: AuditDashboardService) {}

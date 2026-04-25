@@ -108,3 +108,22 @@ def test_acl_as_json_is_sorted() -> None:
     for key, roles in payload.items():
         assert roles == sorted(roles), f"{key!r} roles not sorted"
         assert set(roles) <= ALL_ROLES, f"{key!r} contains unknown role"
+
+
+def test_canonical_json_matches_source() -> None:
+    """Drift guard: `src/shared/acl-map.json` must match the Python source.
+
+    When this fails, regenerate the JSON via the procedure in
+    `src/shared/README.md` (also update the NestJS fallback to match).
+    """
+    import json
+    from pathlib import Path
+
+    repo_src = Path(__file__).resolve().parents[2]
+    canonical_path = repo_src / "shared" / "acl-map.json"
+    canonical = json.loads(canonical_path.read_text())
+    assert acl_as_json() == canonical, (
+        "ACL drift: src/shared/acl-map.json is out of sync with "
+        "ai-service/workflows/acl.py. See src/shared/README.md for the "
+        "update procedure."
+    )

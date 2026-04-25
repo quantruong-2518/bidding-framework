@@ -106,6 +106,31 @@ def acl_as_json() -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in ARTIFACT_ACL.items()}
 
 
+def apply_role_filter(state, roles: list[str]):
+    """Scrub artifact fields the caller's roles can't see.
+
+    Returns the same instance (mutated in place). When ``roles`` is empty
+    no filter is applied — internal callers (workers, integration tests)
+    skip the header and get the unfiltered state. ``reviews`` is reduced
+    to an empty list to keep its declared list type intact; everything
+    else is set to None.
+
+    Lives here (not in `workflows/router.py`) so the helper is importable
+    without dragging in FastAPI / Temporal / parser deps for unit tests.
+    The argument is type-erased (`Any`) to avoid a circular import with
+    `workflows/models.py`; the only fields it touches are the artifact
+    keys defined above.
+    """
+
+    if not roles:
+        return state
+    for field in ALL_ARTIFACT_KEYS:
+        if not has_access(roles, field):
+            empty: object = [] if field == "reviews" else None
+            setattr(state, field, empty)
+    return state
+
+
 __all__ = [
     "AppRole",
     "ArtifactKey",
@@ -115,4 +140,5 @@ __all__ = [
     "has_access",
     "visible_artifacts",
     "acl_as_json",
+    "apply_role_filter",
 ]

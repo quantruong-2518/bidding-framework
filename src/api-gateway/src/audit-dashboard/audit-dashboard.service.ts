@@ -84,22 +84,25 @@ export class AuditDashboardService {
           : { costs: EMPTY_COSTS, warning: (costsResult.reason as Error).message };
       if (cost.warning) warnings.push(cost.warning);
 
-      const completedAction = decisionTrail
-        .slice()
-        .reverse()
-        .find((d) => d.action.includes('workflow'));
+      // `updatedAt` is bumped on every Bid mutation; for a terminal status
+      // it's our best proxy for the completion time without dragging in
+      // Temporal Visibility (still stubbed). For non-terminal bids we
+      // return `null` rather than guess.
+      const isTerminal = bid?.status === 'WON' || bid?.status === 'LOST';
+      const completedAt = isTerminal ? (bid?.updatedAt ?? null) : null;
+      const totalDurationMs =
+        completedAt && bid?.createdAt
+          ? new Date(completedAt).getTime() -
+            new Date(bid.createdAt).getTime()
+          : null;
       return {
         bidId,
         workflowId: bid?.workflowId ?? null,
         summary: {
           status: bid?.status ?? 'unknown',
           createdAt: bid?.createdAt ?? null,
-          completedAt: bid?.updatedAt ?? null,
-          totalDurationMs:
-            bid?.createdAt && completedAction
-              ? new Date(completedAction.timestamp).getTime() -
-                new Date(bid.createdAt).getTime()
-              : null,
+          completedAt,
+          totalDurationMs,
         },
         decisionTrail,
         workflowHistory: history.events,
@@ -186,7 +189,12 @@ export class AuditDashboardService {
         bids: filtered.length,
         completed: filtered.filter((b) => b.status === 'WON').length,
         rejected: filtered.filter((b) => b.status === 'LOST').length,
-        blocked: filtered.filter((b) => b.status === 'DRAFT').length,
+        inProgress: filtered.filter(
+          (b) =>
+            b.status === 'DRAFT' ||
+            b.status === 'TRIAGED' ||
+            b.status === 'IN_PROGRESS',
+        ).length,
       };
 
       const byDay = Object.entries(costs.byDay).map(([date, costUsd]) => ({
@@ -195,13 +203,24 @@ export class AuditDashboardService {
         bidCount: filtered.filter((b) => b.createdAt.startsWith(date)).length,
       }));
 
-      const topBids = filtered
+      // Newest-first sample; no per-bid cost fanout (deferred).
+      const recentBids = filtered
         .slice(0, 10)
         .map((b) => ({
           bidId: b.id,
           clientName: b.clientName,
-          costUsd: 0, // per-bid breakdown requires an N-query loop; Phase 3.4 if ops ask.
+          status: b.status,
         }));
+
+      // Drop dashboard self-reads from the "recent decisions" feed — admins
+      // hitting the dashboard shouldn't see themselves pinging it.
+      const decisionFeed = recent
+        .filter(
+          (r) =>
+            !r.action.startsWith('GET /dashboard/') &&
+            !r.action.startsWith('GET /bids/:id/audit'),
+        )
+        .map((r) => ({ ...r, bidId: r.resourceId }));
 
       const bidCount = filtered.length || 1;
       return {
@@ -210,7 +229,6 @@ export class AuditDashboardService {
         costUsd: {
           total: costs.total,
           avgPerBid: costs.total / bidCount,
-          p95PerBid: 0,
         },
         agentCost: {
           ba: costs.byAgent.ba ?? 0,
@@ -218,11 +236,8 @@ export class AuditDashboardService {
           domain: costs.byAgent.domain ?? 0,
         },
         byDay,
-        topBids,
-        recentDecisions: recent.map((r) => ({
-          ...r,
-          bidId: r.resourceId,
-        })),
+        recentBids,
+        recentDecisions: decisionFeed,
         warnings,
       };
     });
@@ -285,7 +300,7 @@ export class AuditDashboardService {
       `# totals.bids=${summary.totals.bids}`,
       `# totals.completed=${summary.totals.completed}`,
       `# totals.rejected=${summary.totals.rejected}`,
-      `# totals.blocked=${summary.totals.blocked}`,
+      `# totals.in_progress=${summary.totals.inProgress}`,
       `# cost.total_usd=${summary.costUsd.total.toFixed(4)}`,
       `# warnings=${summary.warnings.length}`,
     ];

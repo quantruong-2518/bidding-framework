@@ -3,9 +3,9 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-25 (Phase 3.3 delivered — Conv-10 solo, 269 tests green, Temporal agg stubbed)
+## Last Updated: 2026-04-25 (Phase 3.3 delivered + post-review hardening — 289 tests green, ACL drift guarded)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code) COMPLETE — next = Phase 3.4 retrospective OR Conv-8c real-LLM smoke
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 (code, hardened) COMPLETE — next = Phase 3.4 retrospective OR Conv-8c real-LLM smoke
 
 ## >>> NEXT ACTION <<<
 **Next conversation = Conv-11 (Phase 3.4) OR Conv-8c (real-LLM smoke).** Two options:
@@ -34,6 +34,43 @@
 - 3.6 before 3.7 (load test needs real cluster target)
 
 **Each plan has:** scope + non-goals + locked decisions table + contract tables (DTOs, endpoints, schemas) + file-level breakdown (NEW + MODIFIED) + step-by-step execution order (grouped by phase) + test matrix + risk register + cost gate + runbook.
+
+### Phase 3.2b + 3.3 Post-Review Hardening — Conv-10 solo (2026-04-25, same day)
+**Trigger:** code review of the just-shipped Phase 3.2b + 3.3 surfaced 2 real runtime bugs + 6 contract / coverage gaps. All addressed in one follow-up commit. No external deps. Zero shipped behaviour was wrong; this round is "kill the easy regressions before pilot".
+
+**Bugs fixed:**
+1. **`audit_log` flood from polling** — frontend `useWorkflowStatus` polls every 15 s; Phase 3.2b had attached `@Roles(...)` to `/workflow/status`, so each poll wrote a row. 1 user × 1 bid × 24 h = ~5 760 rows of noise. Fix: new `@SkipAudit()` metadata decorator (`src/audit/skip-audit.decorator.ts`); interceptor reads it via `Reflector.getAllAndOverride`. Applied at handler level on `WorkflowsController.status` and class level on `AuditDashboardController` (so `/dashboard/*` reads — including the cross-bid view itself — don't self-reference).
+2. **Langfuse `aggregateRange` sequential N+1** — for-await loop over up to 200 traces × ~200–500 ms each → 40–100 s per cold call (worse than the 5-min cache TTL window in pathological cases). Fix: extracted `chunkedMap` helper (concurrency=10) inside `langfuse.aggregator.ts`. Preserves input order, rethrows first rejection, default cap is configurable. Wallclock now ~200 ms × ⌈N/10⌉.
+
+**Contract clean-ups (zero broken — no client code consumed the dropped fields):**
+3. `DashboardSummary.totals.blocked` → `inProgress` — semantic mislabel; `blocked = DRAFT` was wrong (DRAFT means "not yet triggered", not "blocked"). New `inProgress` covers DRAFT + TRIAGED + IN_PROGRESS. Frontend type updated; KPI cards still render fine.
+4. `DashboardSummary.topBids` → `recentBids` — old field claimed "top by cost" but `costUsd` was hard-coded to 0 and ordering was newest-first. Renamed + dropped the misleading cost field. Per-bid cost fanout deferred behind a follow-up note.
+5. `DashboardSummary.costUsd.p95PerBid` — dropped (always 0; needs per-bid fanout).
+6. `summaryToCsv` footer key renamed `# totals.blocked=` → `# totals.in_progress=`.
+7. **Self-referential decision feed** — `recentDecisions` now filters out `GET /dashboard/*` and `GET /bids/:id/audit` so an admin loading the dashboard doesn't see themselves doing it.
+8. **`getBidDetail.summary.{completedAt, totalDurationMs}`** — was scanning `decisionTrail` for "workflow"-containing actions (fragile + included status reads). New rule: terminal-only (`status === 'WON' | 'LOST'`), `completedAt = bid.updatedAt`, otherwise `null`. Cleaner contract; covered by 1 new spec.
+
+**Coverage / drift fixes:**
+9. **`apply_role_filter` extracted** to `workflows/acl.py` (was inline in router.py). Decouples the BidState scrubbing from FastAPI / Temporal / parser imports so it runs on bare Python. New `tests/test_role_filter.py` covers admin / empty / ba / qc / domain_expert / multi-role-union / `reviews=[]` invariant / idempotence — 7 specs, all green.
+10. **ACL drift guard** — `src/shared/acl-map.json` is now the canonical contract. Pytest `test_canonical_json_matches_source` checks Python's `acl_as_json()` matches the file; Jest `acl-canonical.spec.ts` checks NestJS `FALLBACK_ARTIFACT_ACL` matches the file. Update procedure documented in `src/shared/README.md`. Any drift → both sides red until reviewer realigns the JSON.
+
+**Files touched:**
+- ai-service: `workflows/acl.py` (added `apply_role_filter`), `workflows/router.py` (uses helper, tightened imports), `tests/test_acl.py` (+1 drift case), `tests/test_role_filter.py` NEW (7 specs).
+- api-gateway: `audit/skip-audit.decorator.ts` NEW, `audit/audit.interceptor.ts` (reads SKIP_AUDIT_KEY), `workflows/workflows.controller.ts` (`@SkipAudit()` on status), `audit-dashboard/audit-dashboard.controller.ts` (`@SkipAudit()` class-level), `audit-dashboard/audit-dashboard.service.ts` (totals.inProgress, recentBids, terminal-only duration, decision-feed filter), `audit-dashboard/aggregators/langfuse.aggregator.ts` (chunkedMap + parallel), `audit-dashboard/types.ts` (contract clean-up), `test/audit.interceptor.spec.ts` (+2 SkipAudit cases), `test/audit-dashboard.service.spec.ts` (+3 cases: terminal duration / inProgress count / self-ref filter), `test/audit-dashboard.controller.spec.ts` (rename), `test/langfuse-aggregator.spec.ts` NEW (4 chunkedMap cases), `test/acl-canonical.spec.ts` NEW (3 drift cases).
+- frontend: `lib/api/audit.ts` (rename fields), `__tests__/audit-dashboard.test.tsx` (rename fixture).
+- shared: `shared/acl-map.json` NEW, `shared/README.md` NEW.
+
+**Tests at delivery:**
+- ai-service pytest: **18 passed / 2 files** (10 ACL incl. drift + 8 role-filter incl. helper).
+- api-gateway jest: **190 passed / 14 suites** (+12 from 3.3 baseline 178).
+- frontend vitest: **81 passed / 14 suites** (unchanged; field renames only touched fixtures).
+- `npm run build` (api-gateway + frontend) + `tsc --noEmit` clean.
+
+**Open carry-forward (unchanged from 3.3):**
+- Live Docker smoke with Langfuse creds.
+- Temporal Visibility gRPC client in Phase 3.6.
+- Per-bid cost fanout (now `recentBids` doesn't lie about it).
+- Full `pytest` regression (temporalio + jinja2 + anthropic + langgraph) — Docker-only.
 
 ### Phase 3.3 Delivery — Conv-10 solo (2026-04-25)
 **Scope:** Audit + cost dashboard stitching three upstreams (Postgres `audit_log` from 3.2b, Langfuse REST API, Temporal Visibility). Per-bid drill-down + cross-bid summary + recharts cost panels + CSV export. Partial-failure tolerant — every upstream miss adds a string to `warnings[]` rather than failing the response. No external deps, $0 cost (reads sources that already exist). Conv-10 solo.

@@ -148,11 +148,10 @@ export class LangfuseAggregator {
       const items = traces.data?.data ?? [];
       if (items.length === 0) return empty;
 
-      const byDay: Record<string, number> = {};
-      const byAgent: Record<string, number> = {};
-      let total = 0;
-
-      for (const trace of items) {
+      // Fetch observations concurrently in bounded chunks. Sequential
+      // awaits would balloon to N × 200ms for large date ranges; an
+      // unbounded Promise.all would risk rate-limits on hosted Langfuse.
+      const perTrace = await chunkedMap(items, 10, async (trace) => {
         const day = (trace.timestamp ?? range.from.toISOString()).slice(0, 10);
         const obs = await firstValueFrom(
           this.http.get<{
@@ -171,7 +170,13 @@ export class LangfuseAggregator {
             },
           ),
         );
-        const summary = summariseObservations(obs.data?.data ?? []);
+        return { day, summary: summariseObservations(obs.data?.data ?? []) };
+      });
+
+      const byDay: Record<string, number> = {};
+      const byAgent: Record<string, number> = {};
+      let total = 0;
+      for (const { day, summary } of perTrace) {
         total += summary.totalUsd;
         byDay[day] = (byDay[day] ?? 0) + summary.totalUsd;
         for (const [agent, usd] of Object.entries(summary.byAgent)) {
@@ -232,6 +237,35 @@ export function summariseObservations(
 
   breakdown.latencyP95Ms = percentile(latencies, 0.95);
   return breakdown;
+}
+
+/**
+ * Parallel map with a concurrency cap — avoids importing `p-limit` for a
+ * single call site. Preserves input order in the output array.
+ */
+export async function chunkedMap<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const width = Math.max(1, concurrency);
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  async function runOne(): Promise<void> {
+    while (true) {
+      const i = cursor;
+      cursor += 1;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i] as T, i);
+    }
+  }
+  const runners = Array.from(
+    { length: Math.min(width, items.length) },
+    () => runOne(),
+  );
+  await Promise.all(runners);
+  return out;
 }
 
 function tagAgent(name: string): string {

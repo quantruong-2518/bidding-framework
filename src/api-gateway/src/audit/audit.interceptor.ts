@@ -10,6 +10,7 @@ import { Observable, tap } from 'rxjs';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/current-user.decorator';
 import { AuditService } from './audit.service';
+import { SKIP_AUDIT_KEY } from './skip-audit.decorator';
 
 /**
  * Global interceptor that writes one `audit_log` row per role-gated HTTP request.
@@ -42,6 +43,14 @@ export class AuditInterceptor implements NestInterceptor {
       [context.getHandler(), context.getClass()],
     );
     if (!roleMeta || roleMeta.length === 0) {
+      return next.handle();
+    }
+
+    const skip = this.reflector.getAllAndOverride<boolean | undefined>(
+      SKIP_AUDIT_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (skip) {
       return next.handle();
     }
 

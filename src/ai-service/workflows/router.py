@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from config.temporal import get_settings, get_temporal_client
 from parsers import docx_adapter, pypdf_adapter, rfp_extractor
 from parsers.models import ParseResponse
-from workflows.acl import acl_as_json, has_access
+from workflows.acl import acl_as_json, apply_role_filter
 from workflows.models import (
     BidCard,
     BidState,
@@ -20,26 +20,6 @@ from workflows.models import (
     IntakeInput,
     StartWorkflowResponse,
 )
-
-# BidState fields that are role-gated. `bid_card` is in every ACL so it is
-# effectively always visible, but still listed so the filter is exhaustive.
-_ACL_GATED_FIELDS: tuple[str, ...] = (
-    "bid_card",
-    "triage",
-    "scoping",
-    "ba_draft",
-    "sa_draft",
-    "domain_notes",
-    "convergence",
-    "hld",
-    "wbs",
-    "pricing",
-    "proposal_package",
-    "reviews",
-    "submission",
-    "retrospective",
-)
-
 
 def _parse_roles_header(raw: str | None) -> list[str]:
     """Split the trusted ``x-user-roles`` header into a deduped role list."""
@@ -198,10 +178,4 @@ async def get_bid_state(
         logger.exception("query.error workflow=%s", workflow_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    roles = _parse_roles_header(x_user_roles)
-    if roles:
-        for field in _ACL_GATED_FIELDS:
-            if not has_access(roles, field):
-                empty: object = [] if field == "reviews" else None
-                setattr(state, field, empty)
-    return state
+    return apply_role_filter(state, _parse_roles_header(x_user_roles))

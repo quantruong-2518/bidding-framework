@@ -31,11 +31,11 @@ const SAMPLE_DETAIL: BidAuditDetail = {
 
 const SAMPLE_SUMMARY: DashboardSummary = {
   dateRange: { from: '2026-04-01', to: '2026-04-30' },
-  totals: { bids: 2, completed: 1, rejected: 1, blocked: 0 },
-  costUsd: { total: 1.23, avgPerBid: 0.615, p95PerBid: 0 },
+  totals: { bids: 2, completed: 1, rejected: 1, inProgress: 0 },
+  costUsd: { total: 1.23, avgPerBid: 0.615 },
   agentCost: { ba: 0.5, sa: 0.73, domain: 0 },
   byDay: [{ date: '2026-04-10', bidCount: 2, costUsd: 1.23 }],
-  topBids: [],
+  recentBids: [],
   recentDecisions: [],
   warnings: [],
 };

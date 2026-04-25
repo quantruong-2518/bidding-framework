@@ -47,12 +47,12 @@ export interface DashboardSummary {
     bids: number;
     completed: number;
     rejected: number;
-    blocked: number;
+    inProgress: number;
   };
-  costUsd: { total: number; avgPerBid: number; p95PerBid: number };
+  costUsd: { total: number; avgPerBid: number };
   agentCost: { ba: number; sa: number; domain: number };
   byDay: Array<{ date: string; bidCount: number; costUsd: number }>;
-  topBids: Array<{ bidId: string; clientName: string; costUsd: number }>;
+  recentBids: Array<{ bidId: string; clientName: string; status: string }>;
   recentDecisions: Array<DecisionTrailEntry & { bidId: string | null }>;
   warnings: string[];
 }

@@ -33,14 +33,14 @@ vi.mock('recharts', async () => {
 
 const SUMMARY: DashboardSummary = {
   dateRange: { from: '2026-04-01', to: '2026-04-30' },
-  totals: { bids: 5, completed: 3, rejected: 1, blocked: 1 },
-  costUsd: { total: 12.34, avgPerBid: 2.47, p95PerBid: 0 },
+  totals: { bids: 5, completed: 3, rejected: 1, inProgress: 1 },
+  costUsd: { total: 12.34, avgPerBid: 2.47 },
   agentCost: { ba: 4.2, sa: 5.1, domain: 3.04 },
   byDay: [
     { date: '2026-04-10', bidCount: 2, costUsd: 5.0 },
     { date: '2026-04-11', bidCount: 3, costUsd: 7.34 },
   ],
-  topBids: [],
+  recentBids: [],
   recentDecisions: [
     {
       timestamp: '2026-04-10T12:00:00.000Z',

@@ -70,14 +70,13 @@ export interface DashboardSummary {
   dateRange: { from: string; to: string };
   totals: {
     bids: number;
-    completed: number;
-    rejected: number;
-    blocked: number;
+    completed: number; // Bid.status === 'WON'
+    rejected: number; // Bid.status === 'LOST'
+    inProgress: number; // Bid.status === 'TRIAGED' | 'IN_PROGRESS' | 'DRAFT'
   };
   costUsd: {
     total: number;
     avgPerBid: number;
-    p95PerBid: number;
   };
   agentCost: {
     ba: number;
@@ -85,7 +84,9 @@ export interface DashboardSummary {
     domain: number;
   };
   byDay: Array<{ date: string; bidCount: number; costUsd: number }>;
-  topBids: Array<{ bidId: string; clientName: string; costUsd: number }>;
+  /** Newest-first sample (up to 10) — not a top-by-cost ranking; cost
+   * fanout is deferred to a follow-up. */
+  recentBids: Array<{ bidId: string; clientName: string; status: string }>;
   recentDecisions: Array<
     DecisionTrailEntry & { bidId: string | null }
   >;

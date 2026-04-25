@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { lastValueFrom, of, throwError } from 'rxjs';
 import { AuditInterceptor } from '../src/audit/audit.interceptor';
+import { SKIP_AUDIT_KEY } from '../src/audit/skip-audit.decorator';
 import type { AuditService } from '../src/audit/audit.service';
 import { ROLES_KEY } from '../src/auth/roles.decorator';
 
@@ -22,6 +23,8 @@ describe('AuditInterceptor', () => {
 
   function buildContext(opts: {
     roles?: string[];
+    skipAudit?: boolean;
+    classSkipAudit?: boolean;
     method?: string;
     routePath?: string;
     params?: Record<string, string>;
@@ -29,6 +32,10 @@ describe('AuditInterceptor', () => {
   }): ExecutionContext {
     const handler = () => undefined;
     if (opts.roles) Reflect.defineMetadata(ROLES_KEY, opts.roles, handler);
+    if (opts.skipAudit) Reflect.defineMetadata(SKIP_AUDIT_KEY, true, handler);
+    class Dummy {}
+    if (opts.classSkipAudit)
+      Reflect.defineMetadata(SKIP_AUDIT_KEY, true, Dummy);
 
     const req = {
       method: opts.method ?? 'GET',
@@ -39,7 +46,7 @@ describe('AuditInterceptor', () => {
     return {
       getType: () => 'http',
       getHandler: () => handler,
-      getClass: () => class Dummy {},
+      getClass: () => Dummy,
       switchToHttp: () => ({
         getRequest: () => req,
       }),
@@ -146,5 +153,29 @@ describe('AuditInterceptor', () => {
         roles: [],
       }),
     );
+  });
+
+  it('skips routes decorated with @SkipAudit() at the handler', async () => {
+    const ctx = buildContext({
+      roles: ['admin'],
+      skipAudit: true,
+      routePath: '/bids/:id/workflow/status',
+      user: { sub: 'u', username: 'u', roles: ['admin'] },
+    });
+    const next: CallHandler = { handle: () => of('ok') };
+    await lastValueFrom(interceptor.intercept(ctx, next));
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('honours @SkipAudit() applied at the controller class level', async () => {
+    const ctx = buildContext({
+      roles: ['admin'],
+      classSkipAudit: true,
+      routePath: '/dashboard/audit',
+      user: { sub: 'u', username: 'u', roles: ['admin'] },
+    });
+    const next: CallHandler = { handle: () => of('ok') };
+    await lastValueFrom(interceptor.intercept(ctx, next));
+    expect(audit.record).not.toHaveBeenCalled();
   });
 });
