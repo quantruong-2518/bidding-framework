@@ -11,6 +11,9 @@ import Redis, { type RedisOptions } from 'ioredis';
 export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
 export const REDIS_SUBSCRIBER = Symbol('REDIS_SUBSCRIBER');
 
+/** Cap on the dead-letter list — bounds memory if Redis stays degraded. */
+const DLQ_CAP = 1_000;
+
 export type RedisMessageHandler = (channel: string, message: string) => void;
 
 /**
@@ -69,6 +72,35 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
     const id = await this.client.xadd(stream, '*', ...entries);
     return id ?? '';
+  }
+
+  /**
+   * Park a payload that failed to reach its primary stream. Writes a
+   * JSON envelope to a Redis list `${stream}.dlq` (LPUSH) and trims to a
+   * cap so the list can't grow unbounded. An oncall script can drain the
+   * list with LRANGE/RPOPLPUSH once the underlying outage clears.
+   *
+   * Caveat: a Redis-list DLQ does NOT help when the entire Redis cluster
+   * is down — both calls would fail. Catches the realistic cases (XADD
+   * type mismatch, MAXLEN reject, transient stream-only failure).
+   */
+  async deadLetter(
+    stream: string,
+    payload: Record<string, unknown>,
+    error: Error,
+  ): Promise<void> {
+    const dlqKey = `${stream}.dlq`;
+    const envelope = JSON.stringify({
+      stream,
+      payload,
+      error: error.message,
+      failedAt: new Date().toISOString(),
+    });
+    await this.client
+      .multi()
+      .lpush(dlqKey, envelope)
+      .ltrim(dlqKey, 0, DLQ_CAP - 1)
+      .exec();
   }
 
   /**

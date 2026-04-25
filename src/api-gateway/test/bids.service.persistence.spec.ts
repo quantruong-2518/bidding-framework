@@ -9,11 +9,14 @@ import { RedisService } from '../src/redis/redis.service';
 describe('BidsService (persistence via in-memory sqlite)', () => {
   let service: BidsService;
   let repo: Repository<Bid>;
-  let redis: { publishStream: jest.Mock };
+  let redis: { publishStream: jest.Mock; deadLetter: jest.Mock };
   let moduleRef: TestingModule;
 
   beforeEach(async () => {
-    redis = { publishStream: jest.fn().mockResolvedValue('1-0') };
+    redis = {
+      publishStream: jest.fn().mockResolvedValue('1-0'),
+      deadLetter: jest.fn().mockResolvedValue(undefined),
+    };
 
     moduleRef = await Test.createTestingModule({
       imports: [
@@ -137,6 +140,31 @@ describe('BidsService (persistence via in-memory sqlite)', () => {
 
   it('redis publish failures do not abort create()', async () => {
     redis.publishStream.mockRejectedValueOnce(new Error('network'));
+    const bid = await service.create(dto, 'alice');
+    expect(bid.id).toBeDefined();
+    const fromDb = await repo.findOneByOrFail({ id: bid.id });
+    expect(fromDb).toBeTruthy();
+  });
+
+  it('routes failed stream publishes to the DLQ with full payload + error', async () => {
+    const cause = new Error('xadd MAXLEN reject');
+    redis.publishStream.mockRejectedValueOnce(cause);
+    const bid = await service.create(dto, 'alice');
+    expect(redis.deadLetter).toHaveBeenCalledTimes(1);
+    expect(redis.deadLetter).toHaveBeenCalledWith(
+      'bid.events',
+      expect.objectContaining({
+        event: 'bid.created',
+        bidId: bid.id,
+        createdBy: 'alice',
+      }),
+      cause,
+    );
+  });
+
+  it('still returns the saved bid when both stream + DLQ fail', async () => {
+    redis.publishStream.mockRejectedValueOnce(new Error('stream down'));
+    redis.deadLetter.mockRejectedValueOnce(new Error('dlq down'));
     const bid = await service.create(dto, 'alice');
     expect(bid.id).toBeDefined();
     const fromDb = await repo.findOneByOrFail({ id: bid.id });

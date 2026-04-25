@@ -34,17 +34,29 @@ export class BidsService {
     });
     const saved = await this.bids.save(entity);
 
+    const event = {
+      event: 'bid.created',
+      bidId: saved.id,
+      createdBy: createdBy ?? 'system',
+      payload: saved,
+    };
     try {
-      await this.redis.publishStream(BID_STREAM, {
-        event: 'bid.created',
-        bidId: saved.id,
-        createdBy: createdBy ?? 'system',
-        payload: saved,
-      });
+      await this.redis.publishStream(BID_STREAM, event);
     } catch (err) {
       this.logger.warn(
-        `Failed to publish bid.created to stream: ${(err as Error).message}`,
+        `Failed to publish bid.created to stream: ${(err as Error).message} — routing to DLQ`,
       );
+      try {
+        await this.redis.deadLetter(BID_STREAM, event, err as Error);
+      } catch (dlqErr) {
+        // Both Redis paths failed — the cluster is likely fully down.
+        // Last-resort: dump the payload to logs so an oncall can replay
+        // by hand. The bid row is already persisted in Postgres so the
+        // user request still succeeds.
+        this.logger.error(
+          `Stream + DLQ both failed for bid=${saved.id}: ${(dlqErr as Error).message}. Payload: ${JSON.stringify(event)}`,
+        );
+      }
     }
     return saved;
   }
