@@ -3,17 +3,50 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-25 (Phase 3.7 LiteLLM provider abstraction — 3 atomic commits, 63 unit specs)
+## Last Updated: 2026-04-26 (Phase 3.7d 4-tier LLM routing + LLMConversation — 2 commits 3da2844 + c408cf1, 55 new specs, live OpenAI smoke PASS at $0.001174)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 (code) COMPLETE — every remaining task needs an external resource
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d (code) COMPLETE — code-only path NOT exhausted; 8 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
 
 ## >>> NEXT ACTION <<<
-Phase 3.7 just shipped — provider abstraction is now in place. Code-only `$0` work consumed.
 
-- ✅ `ANTHROPIC_API_KEY` + Docker → **Conv-8c** (40 min, ~$0.10, closes 4 carry-forwards: Phase 2.2 real-LLM + 3.5 Langfuse + 3.2b live + 3.3 live; now also smokes the 3.7 LiteLLM path under provider=anthropic).
-- ✅ Either `ANTHROPIC_API_KEY` OR `OPENAI_API_KEY` + Docker → run Conv-8c with the chosen provider via a single `LLM_PROVIDER` env flip.
-- ✅ K8s cluster + k6 runner → **Conv-12** (Phase 3.6 K8s + 3.7K8s load test — note: that "3.7" is the K8s-loadtest phase, not the LiteLLM phase that just shipped).
-- ❌ None of the above → no further `$0` code work remains; revisit when at least one resource arrives.
+**Recommendation: Conv 13 — Phase 3.4 multi-tenant KB isolation (item #5 only).**
+- Code-only, $0 LLM, ~400 LOC + 20 tests, 1 conversation.
+- Hard blocker for any pilot >1 customer (cross-tenant KB leak risk).
+- Closes longest-living carry-forward (Phase 2.7).
+- No external dep — runnable today.
+
+Path-to-pilot (4 conversations):
+- **Conv 13** (now): multi-tenant KB filter on Qdrant payload. $0.
+- **Conv 14**: S5/S6/S7 real LLM via `LLMConversation` 4-tier (proposal sale-readiness). ~$0.05/bid.
+- **Conv 15**: S11 retrospective real LLM + Obsidian write-back + S4 semantic compare. ~$0.05/bid.
+- **Conv 16**: live smoke (Anthropic side) + Docker E2E + .env.example rebuild. Needs `ANTHROPIC_API_KEY` + Docker + permission lift.
+
+Detour gates (jump if resource arrives):
+- ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
+- ✅ K8s cluster arrives → **Conv 18** (Phase 3.6 Helm + HPA + cert-manager).
+- ✅ Cluster + k6 runner → **Conv 19** (Phase 3.7-K8s load suite).
+
+### Phase 3.7d 4-tier LLM routing + LLMConversation — Conv-T2 (2026-04-26)
+**Trigger:** user asked "tôi muốn llmlite sẽ phải dynamic về model, đổi ở các call đơn giản - trung bình - phưc tạp - tư duy sâu qua lại giữa các model mà conversation chung (state memory) vẫn được keep" — the 2-role split (`reasoning`/`extraction`) was too coarse and stateless `LLMRequest` forced agents to manually rebuild message history per turn.
+
+1. **`feat(ai-service): 4-tier LLM routing + LLMConversation cross-model memory`** (3da2844) — 9 files, +1275 LOC. NEW `tools/llm/conversation.py` with `LLMConversation` class (per-instance `asyncio.Lock`, audit `turns[]`, opt-in `compact()`, `to_dict/from_dict`). `tools/llm/types.py` adds `LLMTier` (nano/small/flagship/deep), `LLMRequest.tier` field, role→tier alias validator. `config/llm.py` `PROVIDER_DEFAULTS` reshaped 2-tuple → dict-of-dict per tier; per-tier env overrides (`LLM_MODEL_NANO/SMALL/FLAGSHIP/DEEP`); legacy role envs still honoured. `tools/llm/litellm_adapter.py` routes by tier; deep tier attaches `reasoning_effort=high` for OpenAI o-series and `thinking={budget_tokens:8000}` for Anthropic Opus. 55 new unit specs (39 tier routing + 16 conversation incl. concurrent-send + compact-vs-send race regressions).
+
+2. **`fix(ai-service): exclude o1-mini from deep-tier reasoning_effort`** (c408cf1) — live smoke surfaced that OpenAI rejects `reasoning_effort` on `o1-mini` (the legacy mini model) while accepting it on `o1` / `o3` / `o3-mini`. `_deep_tier_kwargs` narrows the o-series detection to skip `o1-mini`. +1 regression spec.
+
+**Live OpenAI smoke (2026-04-26): PASS** — 4-turn conversation (nano→small→flagship→deep, all OpenAI), $0.001174 total, 9 messages preserved exactly, cross-tier memory verified (deep turn coherent with prior 3 turns).
+
+**Test count after 3.7d:** ~120 pytest LLM-layer specs (118 baseline + 1 from c408cf1 + the 55 new in 3da2844 already counted in baseline). Run with `python3 -m pytest --noconftest tests/test_llm_*.py tests/test_claude_client_shim.py` (the autouse conftest fixture imports temporalio which isn't installed globally).
+
+**Operating model after 3.7d:**
+- Tier-based: `LLMConversation(...)` + `await conv.send(content, tier="nano"|"small"|"flagship"|"deep")`. Memory preserved across model swaps (provider-agnostic — messages are plain text).
+- Cost transparency: `conv.total_cost_usd` + `conv.turns[i].{tier, model, cost_usd, latency_ms}`.
+- Backward compat: `LLMRequest(role="reasoning"|"extraction")` still works — auto-aliases to tier (extraction→nano, reasoning→flagship). Existing BA/SA/Domain agents unchanged.
+
+**Carry-forwards from 3.7d:**
+- Anthropic-side live smoke (deep `thinking` end-to-end) — needs `ANTHROPIC_API_KEY`.
+- Agent migration BA/SA/Domain → `LLMConversation` directly — tactical, no current ask.
+
+
 
 **Conversation 2026-04-25 recap (read if you weren't in the previous conversation):** see `memory/project_conv_2026_04_25_log.md` (Phase 3.2b + 3.3 + post-review hardening), `memory/project_conv_2026_04_25_tactical_cleanup.md` (T1 — 5 commits), and `memory/project_phase_3_7_delivered.md` (this round). Combined day total: 11 commits, 81 unit specs added (8 jest + 9 vitest + 63 pytest), 200 jest / 90 vitest / ~95 pytest cumulative.
 
