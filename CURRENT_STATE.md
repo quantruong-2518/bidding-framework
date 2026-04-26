@@ -3,28 +3,54 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-26 (Phase 3.7d 4-tier LLM routing + LLMConversation — 2 commits 3da2844 + c408cf1, 55 new specs, live OpenAI smoke PASS at $0.001174)
+## Last Updated: 2026-04-26 (Phase 3.4 Phase-A multi-tenant KB isolation — Conv-13, code-only, host-verified slug + filter helpers)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d (code) COMPLETE — code-only path NOT exhausted; 8 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A (code) COMPLETE — code-only path remains for Conv 14 (S5/S6/S7 real LLM); 7 feature gaps + 2 infra gaps + 4 carry-forwards. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
 
 ## >>> NEXT ACTION <<<
 
-**Recommendation: Conv 13 — Phase 3.4 multi-tenant KB isolation (item #5 only).**
-- Code-only, $0 LLM, ~400 LOC + 20 tests, 1 conversation.
-- Hard blocker for any pilot >1 customer (cross-tenant KB leak risk).
-- Closes longest-living carry-forward (Phase 2.7).
-- No external dep — runnable today.
+**Recommendation: Conv 14 — S5 / S6 / S7 real LLM via `LLMConversation` 4-tier.**
+- Replaces the deterministic stubs at `activities/{solution_design,wbs,commercial}.py` so the proposal output becomes sale-ready.
+- Use flagship for HLD synthesis (S5), small for WBS templating (S6), nano for pricing math (S7).
+- Code-only for unit tests; LLM smoke needs a provider key (any of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `BEDROCK_*` / `GEMINI_API_KEY`).
+- Estimated ~1500 LOC + ~$0.05/bid LLM at smoke time.
 
-Path-to-pilot (4 conversations):
-- **Conv 13** (now): multi-tenant KB filter on Qdrant payload. $0.
-- **Conv 14**: S5/S6/S7 real LLM via `LLMConversation` 4-tier (proposal sale-readiness). ~$0.05/bid.
+Path-to-pilot (3 conversations remaining):
+- **Conv 14** (now): S5/S6/S7 real LLM (proposal sale-readiness).
 - **Conv 15**: S11 retrospective real LLM + Obsidian write-back + S4 semantic compare. ~$0.05/bid.
-- **Conv 16**: live smoke (Anthropic side) + Docker E2E + .env.example rebuild. Needs `ANTHROPIC_API_KEY` + Docker + permission lift.
+- **Conv 16**: live smoke (Anthropic side) + Docker E2E + `.env.example` rebuild. Needs `ANTHROPIC_API_KEY` + Docker + permission lift.
 
 Detour gates (jump if resource arrives):
 - ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
 - ✅ K8s cluster arrives → **Conv 18** (Phase 3.6 Helm + HPA + cert-manager).
 - ✅ Cluster + k6 runner → **Conv 19** (Phase 3.7-K8s load suite).
+
+### Phase 3.4 Phase-A multi-tenant KB isolation — Conv-13 (2026-04-26)
+**Trigger:** path-to-pilot needed the cross-tenant leak risk closed before any pilot >1 customer can run. Per `project_phase_3_4_detailed_plan.md` Phase A, this commit ships only the multi-tenant filter (item #5); the S11 retrospective + Obsidian sync stay deferred to Conv 15.
+
+1. **`feat(rag): multi-tenant KB isolation via tenant_id filter`** — single commit. NEW `rag/tenant.py` (`SHARED_TENANT="shared"`, `slugify`, `derive_tenant_id_from_path`, `derive_tenant_id_from_relative_path`). NEW `tests/test_tenant_isolation.py` (12 specs covering slug matrix, path-derivation matrix, Qdrant filter must/should mapping, kb_search ValueError on empty tenant + filter assembly + degraded-Qdrant path). Production wiring:
+   - `workflows/artifacts.py::StreamInput.tenant_id` becomes a required `str`.
+   - `workflows/models.py::BidCard.tenant_id` becomes an optional `str | None` override (D5 in plan: `tenant_id = slugify(client_name)` by default; explicit field disambiguates name collisions).
+   - `workflows/bid_workflow.py::_run_s3_streams` derives the effective tenant once and passes it into every S3a/b/c stream input. `rag.tenant` joins the `workflow.unsafe.imports_passed_through()` block.
+   - `rag/retriever.py::_FILTER_EQ_KEYS` adds `tenant_id`, so `build_qdrant_filter` already maps list values onto `should` clauses.
+   - `rag/indexer.py::DocumentMetadata.tenant_id` field; `index_documents` payload assembly defaults missing `tenant_id` to `SHARED_TENANT`; `index_markdown_file` honours both override + frontmatter.
+   - `tools/kb_search.py` API change: `tenant_id: str` is now required (raises `ValueError` on empty); `include_shared: bool = True` widens the filter to `[tenant_id, "shared"]`. Cross-tenant searches log `kb_search.cross_tenant_search` for audit.
+   - `agents/{ba,sa,domain}_agent.py::retrieve_similar` forward `tenant_id=req.tenant_id`.
+   - `ingestion/ingestion_service.py::_frontmatter_to_overrides` derives `tenant_id` per kb-vault layout (`clients/<tenant>/...` or legacy flat `clients/<tenant>.md` → `<tenant>`; everything else → `shared`); explicit frontmatter `tenant_id:` overrides the path-derived value.
+   - 4 existing fixtures (`test_ba_agent`, `test_ba_agent_streaming`, `test_sa_agent`, `test_domain_agent`) updated to seed `tenant_id="acme-bank"`. `test_ingestion` asserts the `shared` default flows through.
+
+**Host-verified invariants (no Docker):** `slugify` (5 cases), `derive_tenant_id_from_relative_path` (7 cases), `derive_tenant_id_from_path` absolute-path + outside-vault, `tools.kb_search._build_filters` (3 cases incl. `tenant=shared` collapse), `kb_search` raises on empty/whitespace tenant, `DocumentMetadata.tenant_id` round-trip + `model_dump(exclude_none=True)` semantics. Total 18 inline assertions PASS.
+
+**Deferred verification (carry-forward — Conv 16):** the 12 pytest specs in `test_tenant_isolation.py` need Docker to run because conftest pulls in `temporalio` via `activities.notify`. Same applies to the 4 patched fixture files. The earlier ~120 LLM-layer specs are unaffected (already runnable host-only via `--noconftest`).
+
+**Locked decisions delivered (per Phase 3.4 plan table):**
+- D5 — tenant slug from `slugify(client_name)`, override via `BidCard.tenant_id`.
+- D6 — Qdrant payload filter is mandatory on bid-scoped searches; cross-tenant search logs.
+- KB layout convention frozen: `kb-vault/clients/<tenant>/...md` (or legacy flat `<tenant>.md`) for tenant-scoped notes; everything else stays `shared`.
+
+**Carry-forwards from Phase 3.4 NOT shipped (still open for Conv 15):** S11 retrospective real LLM (item #4), Obsidian bi-directional sync (item #7), `kb-vault/bids/` re-ingestion guarded by `outcome="WON" AND approved_for_kb=True`.
+
+
 
 ### Phase 3.7d 4-tier LLM routing + LLMConversation — Conv-T2 (2026-04-26)
 **Trigger:** user asked "tôi muốn llmlite sẽ phải dynamic về model, đổi ở các call đơn giản - trung bình - phưc tạp - tư duy sâu qua lại giữa các model mà conversation chung (state memory) vẫn được keep" — the 2-role split (`reasoning`/`extraction`) was too coarse and stateless `LLMRequest` forced agents to manually rebuild message history per turn.
