@@ -38,7 +38,7 @@ export const CreateBidSchema = z.object({
   industry: z.string().min(1, 'Industry is required').max(100),
   region: z.string().min(1, 'Region is required').max(100),
   deadline: z.string().min(1, 'Deadline is required'),
-  scopeSummary: z.string().max(2000).default(''),
+  scopeSummary: z.string().max(5000).default(''),
   technologyKeywords: z
     .array(z.string().min(1))
     .min(1, 'Add at least one technology keyword'),
@@ -54,7 +54,7 @@ export type UpdateBidInput = z.infer<typeof UpdateBidSchema>;
 export const TriageSignalSchema = z.object({
   approved: z.boolean(),
   reviewer: z.string().min(1).max(200),
-  notes: z.string().max(2000).optional(),
+  notes: z.string().max(5000).optional(),
   bidProfileOverride: BidProfile.optional(),
 });
 export type TriageSignalInput = z.infer<typeof TriageSignalSchema>;
@@ -87,7 +87,7 @@ export type ReviewTargetState = z.infer<typeof ReviewTargetState>;
 export const ReviewCommentSchema = z.object({
   section: z.string().min(1).max(200),
   severity: ReviewCommentSeverity,
-  message: z.string().min(1).max(2000),
+  message: z.string().min(1).max(5000),
   targetState: ReviewTargetState.optional(),
 });
 export type ReviewCommentInput = z.infer<typeof ReviewCommentSchema>;
@@ -97,7 +97,7 @@ export const ReviewSignalSchema = z.object({
   reviewer: z.string().min(1).max(200),
   reviewerRole: ReviewerRole,
   comments: z.array(ReviewCommentSchema).max(50).default([]),
-  notes: z.string().max(2000).optional(),
+  notes: z.string().max(5000).optional(),
 });
 export type ReviewSignalInput = z.infer<typeof ReviewSignalSchema>;
 

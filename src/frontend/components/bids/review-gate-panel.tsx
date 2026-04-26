@@ -128,7 +128,7 @@ export function ReviewGatePanel({
               id="review-notes"
               rows={2}
               placeholder="Optional narrative for the audit trail."
-              {...register('notes', { maxLength: 2000 })}
+              {...register('notes', { maxLength: 5000 })}
             />
           </div>
 

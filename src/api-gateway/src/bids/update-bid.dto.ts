@@ -34,7 +34,7 @@ export class UpdateBidDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(5000)
   scopeSummary?: string;
 
   @IsOptional()

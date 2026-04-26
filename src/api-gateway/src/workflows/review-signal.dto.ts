@@ -50,7 +50,7 @@ export class ReviewCommentDto {
 
   @IsString()
   @MinLength(1)
-  @MaxLength(2000)
+  @MaxLength(5000)
   message!: string;
 
   @IsOptional()
@@ -78,6 +78,6 @@ export class ReviewSignalDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(5000)
   notes?: string;
 }

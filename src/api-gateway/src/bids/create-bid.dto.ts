@@ -30,7 +30,7 @@ export class CreateBidDto {
   deadline!: string;
 
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(5000)
   scopeSummary!: string;
 
   @IsArray()

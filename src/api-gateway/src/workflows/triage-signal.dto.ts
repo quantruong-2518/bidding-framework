@@ -19,7 +19,7 @@ export class TriageSignalDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
+  @MaxLength(5000)
   notes?: string;
 
   @IsOptional()

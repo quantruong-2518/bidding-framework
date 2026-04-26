@@ -100,7 +100,7 @@ export function TriageReviewPanel({ bidId, triage }: TriageReviewPanelProps): Re
               id="triage-notes"
               rows={3}
               placeholder="Optional notes for the workflow history."
-              {...register('notes', { maxLength: 2000 })}
+              {...register('notes', { maxLength: 5000 })}
             />
             {errors.notes && (
               <p className="mt-1 text-xs text-destructive">Notes are too long.</p>
