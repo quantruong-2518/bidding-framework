@@ -10,7 +10,20 @@ from ingestion.vault_parser import ParsedNote, parse_note
 
 logger = logging.getLogger(__name__)
 
-_SKIP_DIR_NAMES = {".obsidian", ".git", ".trash", "node_modules"}
+# S0.5 Wave 2C — additionally skip transient parser scratch dirs so half-written
+# atoms / pre-confirm working copies / binary originals never reach Qdrant.
+# ``_drafts`` and ``packs`` are referenced explicitly in the design doc §4
+# (vault layout); ``_originals`` mirrors the MinIO backstop (Wave 1) for the
+# rare local-fallback case.
+_SKIP_DIR_NAMES = {
+    ".obsidian",
+    ".git",
+    ".trash",
+    "node_modules",
+    "_drafts",
+    "packs",
+    "_originals",
+}
 
 
 def _iter_markdown_files(root: Path) -> list[Path]:

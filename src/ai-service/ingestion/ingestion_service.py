@@ -1,4 +1,17 @@
-"""Top-level ingestion orchestrator: scan -> parse -> index -> graph -> watch."""
+"""Top-level ingestion orchestrator: scan -> parse -> index -> graph -> watch.
+
+S0.5 Wave 2C extension:
+* :func:`_frontmatter_to_overrides` derives the new RAG payload schema fields
+  (``role``, ``atom_type``, ``priority``, ``approved``, ``active``, ``kind``,
+  ``outcome``, ``bid_id``, ``atom_id``, …) from frontmatter + path. The role
+  is path-derived first (per the 5-level vault layout) and frontmatter
+  overrides win — letting a reviewer flip ``approved: true`` in atom md and
+  trigger a prod-collection upsert.
+* The indexer call now receives ``__collection__="auto"`` whenever a role is
+  present, so ``index_documents`` routes per-document to staging vs prod.
+  Notes without role frontmatter (legacy pre-S0.5 layout) keep landing in
+  the legacy collection — no silent leakage to prod.
+"""
 
 from __future__ import annotations
 
@@ -22,8 +35,71 @@ from rag.tenant import (
 logger = logging.getLogger(__name__)
 
 
+# Frontmatter keys we copy through verbatim into the RAG payload. Each key is
+# optional; the ingestion service preserves whatever the atom emitter wrote.
+# Booleans (``approved``, ``active``) are coerced from string|bool|int below.
+_PAYLOAD_PASSTHROUGH_STRING_KEYS: tuple[str, ...] = (
+    "role",
+    "atom_type",
+    "type",
+    "priority",
+    "kind",
+    "outcome",
+    "bid_id",
+    "atom_id",
+    "id",
+    "category",
+    "source_file",
+    "kb_delta_id",
+    "file_id",
+    "section",
+    "language",
+)
+_PAYLOAD_PASSTHROUGH_BOOL_KEYS: tuple[str, ...] = (
+    "approved",
+    "active",
+    "ai_generated",
+)
+_PAYLOAD_PASSTHROUGH_INT_KEYS: tuple[str, ...] = (
+    "page",
+    "chunk_idx",
+)
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    """Best-effort bool coercion. ``None`` when the input is anything else."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "yes", "1"):
+            return True
+        if lowered in ("false", "no", "0"):
+            return False
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value != 0
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
 def _frontmatter_to_overrides(note: ParsedNote) -> dict[str, Any]:
-    """Translate a ParsedNote frontmatter into indexer metadata_overrides."""
+    """Translate a ParsedNote frontmatter + path into indexer metadata_overrides.
+
+    The legacy fields (``client``, ``domain``, ``project_id``, ``year``,
+    ``doc_type``, ``source_path``, ``id``, ``tenant_id``) flow exactly as
+    before so existing test_ingestion specs stay green. The S0.5 additions
+    are appended at the end of the dict and only populated when the
+    frontmatter / path supplies them.
+    """
     fm = note.frontmatter
     overrides: dict[str, Any] = {}
     for key in ("client", "domain", "project_id", "doc_type"):
@@ -48,6 +124,55 @@ def _frontmatter_to_overrides(note: ParsedNote) -> dict[str, Any]:
         overrides["tenant_id"] = slugify(fm_tenant) or SHARED_TENANT
     else:
         overrides["tenant_id"] = derive_tenant_id_from_relative_path(note.relative_path)
+
+    # ----- S0.5 Wave 2C role-aware payload fields ---------------------------
+    # Path-derived role is computed in vault_parser.parse_note already; we
+    # re-use it but let frontmatter override (already merged inside parse_note).
+    if note.derived_role:
+        overrides["role"] = note.derived_role
+    if note.derived_kind:
+        overrides["kind"] = note.derived_kind
+    if note.derived_bid_id and "bid_id" not in overrides:
+        overrides["bid_id"] = note.derived_bid_id
+
+    for key in _PAYLOAD_PASSTHROUGH_STRING_KEYS:
+        if key in overrides:
+            continue
+        raw = fm.get(key)
+        if isinstance(raw, str) and raw.strip():
+            # Atom emitter writes ``type:`` per the AtomFrontmatter shape; the
+            # RAG payload schema calls the same value ``atom_type`` so map it.
+            target = "atom_type" if key == "type" else key
+            overrides.setdefault(target, raw.strip())
+    for key in _PAYLOAD_PASSTHROUGH_BOOL_KEYS:
+        if key in overrides:
+            continue
+        coerced = _coerce_bool(fm.get(key))
+        if coerced is not None:
+            overrides[key] = coerced
+    for key in _PAYLOAD_PASSTHROUGH_INT_KEYS:
+        if key in overrides:
+            continue
+        coerced = _coerce_int(fm.get(key))
+        if coerced is not None:
+            overrides[key] = coerced
+
+    # Default-safe values for atoms: an atom missing approved/active is treated
+    # as not-yet-approved + active. Rationale: legacy notes without these flags
+    # default to staging (never prod), and the indexer's role-based router
+    # already enforces that.
+    if overrides.get("role") == "requirement_atom":
+        overrides.setdefault("approved", False)
+        overrides.setdefault("active", True)
+
+    # Indexer routing hint. ``"auto"`` enables the staging-vs-prod split when a
+    # role is present; without a role we keep the pre-S0.5 ``"legacy"`` path so
+    # existing seed data + RAG smoke tests stay landed where they were.
+    if overrides.get("role"):
+        overrides["__collection__"] = "auto"
+    else:
+        overrides["__collection__"] = "legacy"
+
     return overrides
 
 
