@@ -13,6 +13,7 @@ import { BidsModule } from './bids/bids.module';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './gateway/events.module';
 import { ObjectStoreModule } from './object-store/object-store.module';
+import { ParseSessionsModule } from './parse-sessions/parse-sessions.module';
 import { ParsersModule } from './parsers/parsers.module';
 import { RedisModule } from './redis/redis.module';
 import { WorkflowsModule } from './workflows/workflows.module';
@@ -35,6 +36,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     EventsModule,
     AuditDashboardModule,
     ObjectStoreModule,
+    ParseSessionsModule,
   ],
   controllers: [AppController],
   providers: [
