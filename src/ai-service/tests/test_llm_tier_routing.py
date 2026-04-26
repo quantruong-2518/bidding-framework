@@ -98,11 +98,19 @@ def test_default_tier_is_flagship() -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ["openai/o1", "openai/o1-mini", "openai/o3", "openai/o3-mini"],
+    # o1-mini is excluded — it rejects reasoning_effort. Confirmed via
+    # live smoke 2026-04-26 (LiteLLM UnsupportedParamsError).
+    ["openai/o1", "openai/o3", "openai/o3-mini"],
 )
 def test_deep_tier_kwargs_for_openai_o_series(model: str) -> None:
     kwargs = _deep_tier_kwargs(model)
     assert kwargs == {"reasoning_effort": "high"}
+
+
+def test_deep_tier_kwargs_omits_reasoning_effort_for_o1_mini() -> None:
+    """Regression: o1-mini does not accept reasoning_effort; sending it
+    causes OpenAI to reject the request entirely."""
+    assert _deep_tier_kwargs("openai/o1-mini") == {}
 
 
 @pytest.mark.parametrize(

@@ -459,8 +459,13 @@ def _deep_tier_kwargs(model: str) -> dict[str, Any]:
     ``LLM_MODEL_DEEP=openai/o3`` still picks up the right kwargs because
     the model name contains ``"o3"``.
 
-    - OpenAI o-series (``o1`` / ``o3`` / ``o1-mini`` / ``o3-mini``):
-      ``reasoning_effort="high"``.
+    - OpenAI ``o1`` / ``o3`` / ``o3-mini``: ``reasoning_effort="high"``.
+    - OpenAI ``o1-mini``: NO ``reasoning_effort`` — the param is
+      explicitly rejected by the OpenAI API for this legacy mini model
+      (only the full ``o1`` and the newer ``o3`` family accept it).
+      Discovered via live smoke 2026-04-26: ``UnsupportedParamsError:
+      openai does not support parameters: ['reasoning_effort'], for
+      model=o1-mini``.
     - Anthropic Opus (``claude-opus-*``): ``thinking={"type":"enabled",
       "budget_tokens":8000}``.
     - Other providers: empty dict — call still routes to the premium
@@ -469,8 +474,12 @@ def _deep_tier_kwargs(model: str) -> dict[str, Any]:
     from config.llm import DEEP_TIER_KWARGS
 
     short = model.split("/")[-1].lower()
-    # OpenAI o-series — bare ``o1``/``o3`` or suffixed (``o1-mini``).
-    if short.startswith("o1") or short.startswith("o3"):
+    # OpenAI o-series, excluding the legacy o1-mini that rejects
+    # reasoning_effort. ``o3-mini`` DOES accept it, so the exclusion is
+    # narrow.
+    if short.startswith("o3") or (
+        short.startswith("o1") and not short.startswith("o1-mini")
+    ):
         return dict(DEEP_TIER_KWARGS["openai_o_series"])
     if "opus" in short:
         return dict(DEEP_TIER_KWARGS["anthropic_opus"])
