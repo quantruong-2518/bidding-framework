@@ -32,9 +32,10 @@ from tools.llm import FakeLLMClient
 
 def test_provider_defaults_table_lists_known_providers() -> None:
     assert set(PROVIDER_DEFAULTS) == {"anthropic", "openai", "bedrock", "gemini"}
-    for provider, (reasoning, extraction) in PROVIDER_DEFAULTS.items():
-        assert reasoning.startswith(f"{provider}/"), provider
-        assert extraction.startswith(f"{provider}/"), provider
+    for provider, by_tier in PROVIDER_DEFAULTS.items():
+        assert set(by_tier) == {"nano", "small", "flagship", "deep"}, provider
+        for tier, model_id in by_tier.items():
+            assert model_id.startswith(f"{provider}/"), (provider, tier)
 
 
 def test_resolved_model_falls_back_to_provider_default() -> None:

@@ -3,6 +3,7 @@
 Public surface:
 
     from tools.llm import LLMClient, LLMRequest, LLMResponse, LLMMessage
+    from tools.llm import LLMTier, LLMConversation
     from tools.llm import get_default_client, FakeLLMClient
     from tools.llm.errors import LLMError, LLMRateLimitError, LLMTimeoutError
 
@@ -15,6 +16,7 @@ one-file change.
 from __future__ import annotations
 
 from tools.llm.client import LLMClient, get_default_client
+from tools.llm.conversation import ConversationTurn, LLMConversation
 from tools.llm.errors import (
     LLMAuthError,
     LLMError,
@@ -24,13 +26,22 @@ from tools.llm.errors import (
     LLMValidationError,
 )
 from tools.llm.fake import FakeLLMClient, ScriptedResponse
-from tools.llm.types import LLMMessage, LLMRequest, LLMResponse, TokenUsage
+from tools.llm.types import (
+    LLMMessage,
+    LLMRequest,
+    LLMResponse,
+    LLMTier,
+    TokenUsage,
+)
 
 __all__ = [
     "LLMClient",
     "LLMRequest",
     "LLMResponse",
     "LLMMessage",
+    "LLMTier",
+    "LLMConversation",
+    "ConversationTurn",
     "TokenUsage",
     "FakeLLMClient",
     "ScriptedResponse",

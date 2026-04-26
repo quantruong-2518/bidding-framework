@@ -1,4 +1,4 @@
-"""LLM provider + model selection (Phase 3.7).
+"""LLM provider + model selection (Phase 3.7 + 3.7d).
 
 Canonical LLM configuration. :mod:`config.claude` stays as a compat
 shim that re-exports ``HAIKU`` / ``SONNET`` constants and a thin
@@ -10,8 +10,18 @@ provider-aware.
 Environment::
 
     LLM_PROVIDER=anthropic           # anthropic | openai | bedrock | gemini
-    LLM_MODEL_REASONING=...          # full LiteLLM ID; falls back per provider
-    LLM_MODEL_EXTRACTION=...         # ditto
+
+    # Per-tier overrides (full LiteLLM model IDs); fall back to provider defaults.
+    LLM_MODEL_NANO=...               # cheap classification / extraction
+    LLM_MODEL_SMALL=...              # mid utility (defaults to NANO when unset)
+    LLM_MODEL_FLAGSHIP=...           # default reasoning / synthesis
+    LLM_MODEL_DEEP=...               # extended thinking / o-series
+
+    # Legacy 2-role overrides (still honoured for backward compat).
+    # extraction → nano, reasoning → flagship.
+    LLM_MODEL_REASONING=...
+    LLM_MODEL_EXTRACTION=...
+
     LLM_TIMEOUT_S=30
     LLM_MAX_RETRIES=3
     LLM_RETRY_INITIAL_WAIT_S=1
@@ -20,9 +30,7 @@ Environment::
 Per-provider API keys are read by LiteLLM from its own conventional env
 vars (``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``, ``AWS_ACCESS_KEY_ID``,
 ``GOOGLE_API_KEY``). :func:`is_llm_available` checks the env var that
-matches :attr:`LLMSettings.provider` so a Bid-M run with
-``LLM_PROVIDER=openai`` + ``OPENAI_API_KEY=...`` correctly picks the
-real path even when ``ANTHROPIC_API_KEY`` is absent.
+matches :attr:`LLMSettings.provider`.
 """
 
 from __future__ import annotations
@@ -33,37 +41,59 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from tools.llm.types import LLMTier, ROLE_TO_TIER
+
 __all__ = [
     "LLMSettings",
     "LLMProvider",
     "PROVIDER_DEFAULTS",
     "PROVIDER_KEY_VARS",
+    "DEEP_TIER_KWARGS",
     "get_llm_settings",
     "is_llm_available",
 ]
 
 LLMProvider = Literal["anthropic", "openai", "bedrock", "gemini"]
 
-# Sane defaults per provider. User can override either via
-# LLM_MODEL_REASONING / _EXTRACTION env. When unset we route reasoning to
-# the provider's flagship and extraction to its small/fast variant.
-PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    "anthropic": (
-        "anthropic/claude-sonnet-4-6",
-        "anthropic/claude-haiku-4-5-20251001",
-    ),
-    "openai": (
-        "openai/gpt-4o",
-        "openai/gpt-4o-mini",
-    ),
-    "bedrock": (
-        "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
-    ),
-    "gemini": (
-        "gemini/gemini-1.5-pro",
-        "gemini/gemini-1.5-flash",
-    ),
+# 4-tier model table per provider. The user can override any tier via
+# ``LLM_MODEL_<TIER>``; unset tiers fall back to this table.
+#
+# Tier semantics:
+# - ``nano``     — cheapest; classification, extraction, JSON shaping.
+# - ``small``    — mid utility; defaults to the nano model on providers
+#                  without a distinct mid-tier (Anthropic, OpenAI).
+# - ``flagship`` — default reasoning / synthesis.
+# - ``deep``     — extended thinking; provider-specific reasoning kwargs
+#                  attached by :data:`DEEP_TIER_KWARGS` lookup at call time.
+PROVIDER_DEFAULTS: dict[str, dict[LLMTier, str]] = {
+    "anthropic": {
+        "nano": "anthropic/claude-haiku-4-5-20251001",
+        "small": "anthropic/claude-haiku-4-5-20251001",
+        "flagship": "anthropic/claude-sonnet-4-6",
+        "deep": "anthropic/claude-opus-4-7",
+    },
+    "openai": {
+        "nano": "openai/gpt-4o-mini",
+        "small": "openai/gpt-4o-mini",
+        "flagship": "openai/gpt-4o",
+        # o1 is the established premium reasoning model. Override with
+        # LLM_MODEL_DEEP=openai/o3 (or similar) when a newer one ships.
+        "deep": "openai/o1",
+    },
+    "bedrock": {
+        "nano": "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+        "small": "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+        "flagship": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "deep": "bedrock/anthropic.claude-3-opus-20240229-v1:0",
+    },
+    "gemini": {
+        "nano": "gemini/gemini-1.5-flash",
+        "small": "gemini/gemini-1.5-flash",
+        "flagship": "gemini/gemini-1.5-pro",
+        # Gemini's thinking mode is still evolving — default deep to
+        # 1.5-pro; user can switch to gemini-2.0-flash-thinking-exp.
+        "deep": "gemini/gemini-1.5-pro",
+    },
 }
 
 # Env var that holds the API key per provider. LiteLLM reads these
@@ -80,16 +110,46 @@ PROVIDER_KEY_VARS: dict[str, str] = {
 }
 
 
+def _deep_kwargs_for_o_series() -> dict[str, object]:
+    """OpenAI o1 / o3 reasoning kwargs. ``high`` effort = max latency, max quality.
+    Override per-call by setting ``LLMRequest.metadata['reasoning_effort']`` later
+    if a finer knob is needed."""
+    return {"reasoning_effort": "high"}
+
+
+def _deep_kwargs_for_anthropic_thinking() -> dict[str, object]:
+    """Anthropic extended thinking. 8k budget = ~$0.30 extra per call on Opus —
+    high enough to chain ~3-4 reasoning steps. Override via env if cost gates."""
+    return {"thinking": {"type": "enabled", "budget_tokens": 8000}}
+
+
+# Provider-specific reasoning kwargs attached when ``tier == "deep"``.
+# Empty dict on providers without a uniform thinking API (Gemini, Bedrock
+# routes vary). Detection is by model-string substring inside
+# :func:`tools.llm.litellm_adapter._deep_tier_kwargs`.
+DEEP_TIER_KWARGS: dict[str, dict[str, object]] = {
+    "openai_o_series": _deep_kwargs_for_o_series(),
+    "anthropic_opus": _deep_kwargs_for_anthropic_thinking(),
+}
+
+
 class LLMSettings(BaseSettings):
     """Process-wide LLM config. Read once via :func:`get_llm_settings`."""
 
     model_config = SettingsConfigDict(env_prefix="LLM_", case_sensitive=False)
 
     provider: LLMProvider = "anthropic"
-    # Both fields stay ``None`` by default; the resolver picks the
-    # provider's flagship when not overridden. Setting only the env you
-    # care about (e.g. just ``LLM_MODEL_EXTRACTION=openai/gpt-4o-mini``)
-    # is supported.
+
+    # Per-tier overrides. Unset → fall back to PROVIDER_DEFAULTS[provider][tier].
+    model_nano: str | None = None
+    model_small: str | None = None
+    model_flagship: str | None = None
+    model_deep: str | None = None
+
+    # Legacy 2-role overrides — still consumed by resolved_model() so
+    # existing deployments pinning LLM_MODEL_REASONING continue to work.
+    # When both LLM_MODEL_FLAGSHIP and LLM_MODEL_REASONING are set, the
+    # tier-named one wins (it's the new canonical name).
     model_reasoning: str | None = None
     model_extraction: str | None = None
 
@@ -98,20 +158,31 @@ class LLMSettings(BaseSettings):
     retry_initial_wait_s: float = 1.0
     retry_max_wait_s: float = 16.0
 
-    def resolved_model(self, role: Literal["reasoning", "extraction"]) -> str:
-        """Pick the LiteLLM model ID for a role.
+    def resolved_model_for_tier(self, tier: LLMTier) -> str:
+        """Pick the LiteLLM model ID for a tier.
 
         Order:
-        1. Explicit ``LLM_MODEL_REASONING`` / ``_EXTRACTION``.
-        2. Provider default from :data:`PROVIDER_DEFAULTS`.
+        1. Explicit per-tier env (``LLM_MODEL_NANO`` / ``_SMALL`` / ``_FLAGSHIP`` / ``_DEEP``).
+        2. Legacy ``LLM_MODEL_REASONING`` / ``_EXTRACTION`` when the tier
+           maps onto the legacy role (flagship ↔ reasoning, nano ↔ extraction).
+        3. Provider default from :data:`PROVIDER_DEFAULTS`.
         """
-        if role == "reasoning":
-            override = self.model_reasoning
-            default = PROVIDER_DEFAULTS[self.provider][0]
-        else:
-            override = self.model_extraction
-            default = PROVIDER_DEFAULTS[self.provider][1]
-        return override or default
+        per_tier_field = f"model_{tier}"
+        explicit = getattr(self, per_tier_field, None)
+        if explicit:
+            return explicit
+
+        # Legacy fallback for the two tiers that used to be roles.
+        if tier == "flagship" and self.model_reasoning:
+            return self.model_reasoning
+        if tier == "nano" and self.model_extraction:
+            return self.model_extraction
+
+        return PROVIDER_DEFAULTS[self.provider][tier]
+
+    def resolved_model(self, role: Literal["reasoning", "extraction"]) -> str:
+        """Backward-compat shim — translate the legacy role into a tier."""
+        return self.resolved_model_for_tier(ROLE_TO_TIER[role])
 
 
 @lru_cache(maxsize=1)

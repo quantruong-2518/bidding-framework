@@ -75,6 +75,12 @@ class _FakeSettings:
     def resolved_model(self, role: str) -> str:
         return self._reasoning if role == "reasoning" else self._extraction
 
+    def resolved_model_for_tier(self, tier: str) -> str:
+        # 4-tier shape (Phase 3.7d). flagship/deep route to "reasoning",
+        # nano/small route to "extraction" so existing tests still resolve
+        # the same models without reshaping the fixture.
+        return self._reasoning if tier in ("flagship", "deep") else self._extraction
+
 
 class _FakeChoice:
     def __init__(self, content: str, finish_reason: str = "stop") -> None:
@@ -135,7 +141,11 @@ def test_llm_message_validates_role() -> None:
 
 def test_llm_request_defaults() -> None:
     req = LLMRequest(messages=[LLMMessage(role="user", content="hi")])
-    assert req.role == "reasoning"
+    # Phase 3.7d: tier replaces role as the canonical routing knob.
+    # Default tier is "flagship"; role defaults to None and is only set
+    # when callers opt into the legacy alias.
+    assert req.tier == "flagship"
+    assert req.role is None
     assert req.cache_policy == "ephemeral"
     assert req.max_tokens == 2048
     assert req.timeout_s == 30.0

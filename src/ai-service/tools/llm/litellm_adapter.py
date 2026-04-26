@@ -98,7 +98,7 @@ class LiteLLMClient(LLMClient):
         stream: bool,
         on_token: OnTokenCallback | None,
     ) -> LLMResponse:
-        model = request.model or self._settings.resolved_model(request.role)
+        model = request.model or self._settings.resolved_model_for_tier(request.tier)
         provider = model.split("/", 1)[0] if "/" in model else "unknown"
 
         async def _attempt() -> LLMResponse:
@@ -163,6 +163,12 @@ class LiteLLMClient(LLMClient):
             kwargs["response_format"] = {"type": "json_object"}
         if stream:
             kwargs["stream"] = True
+        # Deep tier: attach provider-specific reasoning kwargs. Empty dict
+        # for providers without a uniform thinking API — the call still
+        # runs on the provider's premium model, just without explicit
+        # extended-thinking budget.
+        if request.tier == "deep":
+            kwargs.update(_deep_tier_kwargs(model))
 
         generation = self._start_generation(request=request, model=model, sdk_messages=sdk_messages)
         started = time.perf_counter()
@@ -443,6 +449,32 @@ def _maybe_parse_schema(text: str, schema: type[BaseModel]) -> BaseModel | None:
         return schema.model_validate(payload)
     except ValidationError:
         return None
+
+
+def _deep_tier_kwargs(model: str) -> dict[str, Any]:
+    """Return provider-specific reasoning kwargs for ``tier="deep"``.
+
+    Detection by model-string substring keeps the helper independent of
+    the per-tier defaults table — a user override like
+    ``LLM_MODEL_DEEP=openai/o3`` still picks up the right kwargs because
+    the model name contains ``"o3"``.
+
+    - OpenAI o-series (``o1`` / ``o3`` / ``o1-mini`` / ``o3-mini``):
+      ``reasoning_effort="high"``.
+    - Anthropic Opus (``claude-opus-*``): ``thinking={"type":"enabled",
+      "budget_tokens":8000}``.
+    - Other providers: empty dict — call still routes to the premium
+      model from PROVIDER_DEFAULTS but with no reasoning knob.
+    """
+    from config.llm import DEEP_TIER_KWARGS
+
+    short = model.split("/")[-1].lower()
+    # OpenAI o-series — bare ``o1``/``o3`` or suffixed (``o1-mini``).
+    if short.startswith("o1") or short.startswith("o3"):
+        return dict(DEEP_TIER_KWARGS["openai_o_series"])
+    if "opus" in short:
+        return dict(DEEP_TIER_KWARGS["anthropic_opus"])
+    return {}
 
 
 def _augment_with_schema_error(request: LLMRequest, raw_text: str) -> LLMRequest:

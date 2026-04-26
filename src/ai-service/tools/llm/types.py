@@ -9,19 +9,31 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "LLMMessage",
     "TokenUsage",
     "LLMRequest",
     "LLMResponse",
+    "LLMTier",
     "ROLE_REASONING",
     "ROLE_EXTRACTION",
+    "ROLE_TO_TIER",
 ]
 
+LLMTier = Literal["nano", "small", "flagship", "deep"]
+
+# Legacy 2-role alias retained for backward compat. New code should use
+# :attr:`LLMRequest.tier` directly. The mapping picks the most natural
+# tier equivalent — extraction/classification work runs on the cheapest
+# model (``nano``); reasoning/synthesis runs on the provider flagship.
 ROLE_REASONING = "reasoning"
 ROLE_EXTRACTION = "extraction"
+ROLE_TO_TIER: dict[str, LLMTier] = {
+    ROLE_REASONING: "flagship",
+    ROLE_EXTRACTION: "nano",
+}
 
 
 class LLMMessage(BaseModel):
@@ -50,13 +62,19 @@ class TokenUsage(BaseModel):
 class LLMRequest(BaseModel):
     """Adapter-agnostic LLM call.
 
-    - ``model`` overrides the role-based default. Use a fully-qualified
+    - ``model`` overrides the tier-based default. Use a fully-qualified
       LiteLLM name (e.g. ``"anthropic/claude-sonnet-4-6"`` or
       ``"openai/gpt-4o"``). When ``None`` the client resolves it from
-      :class:`LLMSettings` based on ``role``.
-    - ``role`` controls model routing — ``"reasoning"`` → Sonnet/GPT-4o,
-      ``"extraction"`` → Haiku/GPT-4o-mini. Cheap default lets agents
-      declare intent without hard-coding model strings.
+      :class:`LLMSettings` based on ``tier``.
+    - ``tier`` controls model routing — ``nano`` (cheap extraction),
+      ``small`` (mid-cost utility), ``flagship`` (default reasoning),
+      ``deep`` (extended-thinking / o-series with reasoning kwargs).
+      Switching tier per call lets a single conversation bounce between
+      cheap and premium models without code changes.
+    - ``role`` is a Phase 3.7 alias kept for backward compat:
+      ``"reasoning"`` → ``flagship``, ``"extraction"`` → ``nano``. Setting
+      ``tier`` always wins; setting only ``role`` resolves to the mapped
+      tier in the validator.
     - ``cache_policy="ephemeral"`` requests prompt caching on the system
       message. Anthropic gets explicit ``cache_control`` blocks; OpenAI
       relies on its automatic 5-minute cache window. Either way, callers
@@ -68,7 +86,11 @@ class LLMRequest(BaseModel):
     """
 
     messages: list[LLMMessage]
-    role: Literal["reasoning", "extraction"] = "reasoning"
+    tier: LLMTier = "flagship"
+    # Legacy field. None means "tier was set explicitly"; otherwise the
+    # validator below maps it onto tier and clears it. Keeping the field
+    # readable lets callers still log what was passed.
+    role: Literal["reasoning", "extraction"] | None = None
     model: str | None = None
     max_tokens: int = 2048
     temperature: float = 0.3
@@ -82,6 +104,19 @@ class LLMRequest(BaseModel):
     node_name: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
+
+    @model_validator(mode="after")
+    def _apply_role_alias(self) -> "LLMRequest":
+        # When the caller supplied only role (legacy path), translate it
+        # to tier. When both are supplied, tier wins — role becomes
+        # purely informational.
+        if self.role is not None and "tier" not in self.model_fields_set:
+            mapped = ROLE_TO_TIER.get(self.role)
+            if mapped is not None:
+                # mode="after" validators may mutate freely; pydantic
+                # accepts the assignment without re-running validation.
+                self.tier = mapped
+        return self
 
 
 class LLMResponse(BaseModel):
