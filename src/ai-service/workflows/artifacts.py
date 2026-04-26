@@ -134,6 +134,10 @@ class HLDDraft(BaseModel):
     integration_points: list[str] = Field(default_factory=list)
     security_approach: str = ""
     deployment_model: str = ""
+    # Phase 2-real: cost + tier of the LLM run that produced this draft.
+    # None when the stub fallback path produced it.
+    llm_cost_usd: float | None = None
+    llm_tier_used: str | None = None
 
 
 # --- S6 WBS + Estimation -----------------------------------------------------
@@ -156,6 +160,8 @@ class WBSDraft(BaseModel):
     total_effort_md: float = 0.0
     timeline_weeks: int = 0
     critical_path: list[str] = Field(default_factory=list)
+    llm_cost_usd: float | None = None
+    llm_tier_used: str | None = None
 
 
 # --- S7 Commercial Strategy --------------------------------------------------
@@ -180,6 +186,8 @@ class PricingDraft(BaseModel):
     total: float = 0.0
     scenarios: dict[str, float] = Field(default_factory=dict)
     notes: str = ""
+    llm_cost_usd: float | None = None
+    llm_tier_used: str | None = None
 
 
 # --- S8 Assembly -------------------------------------------------------------
