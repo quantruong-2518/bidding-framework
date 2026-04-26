@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from workflows.base import (  # re-exported below for backwards compatibility
     BidProfile,
+    IntakeFile,
     RequirementAtom,
     RequirementCategory,
     TriageRecommendation,
@@ -19,13 +20,22 @@ from typing import Literal
 
 
 class IntakeInput(BaseModel):
-    """Raw RFP metadata handed to S0."""
+    """Raw RFP metadata handed to S0.
+
+    Wave 2A widening: ``files`` and ``parse_session_id`` are optional so legacy
+    callers (rfp_text only) keep working. When ``files`` is set, the activity
+    derives ``rfp_text`` from the first file's parsed body — keeping the
+    existing intake heuristic intact.
+    """
 
     client_name: str
     rfp_text: str
     deadline: datetime
     region: str
     industry: str
+    # Wave 2A — multi-file parse-confirm path. Legacy callers leave both unset.
+    files: list[IntakeFile] | None = None
+    parse_session_id: str | None = None
 
 
 class BidCard(BaseModel):
@@ -44,6 +54,12 @@ class BidCard(BaseModel):
     # slugify(client_name). Set explicitly to disambiguate clients that share a name.
     tenant_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+    # Wave 2A additions — populated by the parse-confirm gate. Both optional
+    # so existing manual `POST /bids` callers keep working unchanged.
+    # ``context_md_uri`` doubles as a sentinel: when set, the workflow's S0.5
+    # dispatch skips re-parsing (api-gateway already materialized the vault).
+    context_md_uri: str | None = None
+    parse_session_id: str | None = None
 
 
 class TriageDecision(BaseModel):
@@ -170,6 +186,7 @@ __all__ = [
     "RequirementCategory",
     "RequirementAtom",
     "TriageRecommendation",
+    "IntakeFile",
     "IntakeInput",
     "BidCard",
     "TriageDecision",
