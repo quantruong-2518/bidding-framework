@@ -2,11 +2,22 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { AuditLog } from '../audit/audit-log.entity';
+import { BidStateProjection } from '../bid-state-projection/bid-state-projection.entity';
+import { BidStateTransition } from '../bid-state-projection/bid-state-transition.entity';
 import { Bid } from '../bids/bid.entity';
+import { CreateBidStateProjection1714000000002 } from './migrations/1714000000002-create-bid-state-projection';
 import { InitBidsAndAuditLog1714000000001 } from './migrations/1714000000001-init-bids-and-audit-log';
 
-export const DATABASE_ENTITIES = [Bid, AuditLog];
-export const DATABASE_MIGRATIONS = [InitBidsAndAuditLog1714000000001];
+export const DATABASE_ENTITIES = [
+  Bid,
+  AuditLog,
+  BidStateTransition,
+  BidStateProjection,
+];
+export const DATABASE_MIGRATIONS = [
+  InitBidsAndAuditLog1714000000001,
+  CreateBidStateProjection1714000000002,
+];
 
 /**
  * Build the TypeORM connection options from the `POSTGRES_URL` env var.
