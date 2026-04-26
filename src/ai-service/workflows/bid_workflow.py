@@ -30,17 +30,22 @@ _NIL_UUID = UUID(int=0)
 # Phase 2.6 declarative pipeline matrix.
 # Bid-S skips S5 (Solution Design) + S7 (Commercial) — minimal fast-path.
 # Bid-M / L / XL run the full 12-state pipeline. XL parity (S3d/S3e) deferred.
+# Wave 2A — S0.5 inserted between S1 human-gate and S2 for ALL profiles. The
+# state is a no-op when ``bid_card.context_md_uri`` is set (post-confirm path:
+# api-gateway already materialized the vault). Existing tests pre-S0.5 keep
+# passing because the skip path emits a single transition + advances ``idx``.
 _PROFILE_PIPELINE: dict[BidProfile, tuple[str, ...]] = {
-    "S": ("S0", "S1", "S2", "S3", "S4", "S6", "S8", "S9", "S10", "S11"),
-    "M": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
-    "L": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
-    "XL": ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+    "S": ("S0", "S1", "S0_5", "S2", "S3", "S4", "S6", "S8", "S9", "S10", "S11"),
+    "M": ("S0", "S1", "S0_5", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+    "L": ("S0", "S1", "S0_5", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
+    "XL": ("S0", "S1", "S0_5", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"),
 }
 
 # State literal → BidWorkflow method attribute name. Populated at class body
 # time by walking this tuple; keeping it module-level keeps `workflow.unsafe`
 # imports out of the critical path.
 _STATE_DISPATCH_MAP: dict[str, str] = {
+    "S0_5": "_run_s0_5_context_synthesis",
     "S2": "_run_s2_scoping",
     "S3": "_run_s3_streams",
     "S4": "_run_s4_convergence",
@@ -103,6 +108,11 @@ with workflow.unsafe.imports_passed_through():
     from activities.ba_analysis import ba_analysis_activity
     from activities.bid_workspace import workspace_snapshot_activity
     from activities.commercial import commercial_activity
+    from activities.context_synthesis import (
+        ContextSynthesisInput,
+        ContextSynthesisOutput,
+        context_synthesis_activity,
+    )
     from activities.convergence import convergence_activity
     from activities.domain_mining import domain_mining_activity
     from activities.intake import intake_activity
@@ -189,6 +199,7 @@ _WORKSPACE_RETRY = RetryPolicy(
 # affected artifacts (or render a "+3 artifacts" hint).
 _PHASE_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
     "S0_DONE": ("bid_card",),
+    "S0_5_DONE": (),  # no BidState fields — vault writes only.
     "S1_DONE": ("triage",),
     "S1_NO_BID": (),
     "S2_DONE": ("scoping",),
@@ -305,7 +316,10 @@ class BidWorkflow:
         if profile == "XL":
             workflow.logger.info("XL_PARITY_PENDING phase=2.6")
         pipeline = _PROFILE_PIPELINE[profile]
-        idx = pipeline.index("S2")
+        # Wave 2A — pipeline starts at S0_5 (between S1 gate + S2). Existing
+        # tests pre-S0.5 stay green because S0_5 short-circuits when no
+        # parse_session_id is present on the bid card.
+        idx = pipeline.index("S0_5") if "S0_5" in pipeline else pipeline.index("S2")
         while idx < len(pipeline):
             if self._state == "S9_BLOCKED":
                 return self._snapshot()
@@ -388,6 +402,56 @@ class BidWorkflow:
             update={"estimated_profile": self._profile}
         )
         return True
+
+    # --- S0.5 Context synthesis (Wave 2A) -----------------------------------
+
+    async def _run_s0_5_context_synthesis(self) -> None:
+        """S0.5 dispatch — re-parse + materialize when api-gateway hasn't.
+
+        Conditional skip per Decision: when ``bid_card.context_md_uri`` is set,
+        api-gateway has already materialized the vault tree as part of its
+        atomic confirm transaction (Wave 2B); the workflow simply records the
+        skip transition and moves on. Existing pre-S0.5 callers (no
+        parse_session_id) hit the same skip branch.
+
+        When parse_session_id is set but context_md_uri is not (an unusual
+        state — typically a retry of a confirmed but unmaterialized session),
+        we run the materialize activity with an empty payload; the activity
+        no-ops cleanly when there's nothing to write.
+        """
+        assert self._bid_card is not None
+        self._state = "S0_5"
+
+        # Skip path — api-gateway already wrote the vault. Don't repeat work.
+        if self._bid_card.context_md_uri or self._bid_card.parse_session_id is None:
+            workflow.logger.info(
+                "s0_5.skip reason=%s",
+                "context_md_uri_set"
+                if self._bid_card.context_md_uri
+                else "no_parse_session_id",
+            )
+            return
+
+        # Parse-then-materialize on the workflow side — a niche path used when
+        # the api-gateway started the workflow without running the
+        # parse-confirm gate first. Best-effort: any failure is logged and the
+        # workflow moves on (S2 onwards still works without the vault tree).
+        try:
+            await workflow.execute_activity(
+                context_synthesis_activity,
+                ContextSynthesisInput(
+                    mode="materialize",
+                    parse_session_id=self._bid_card.parse_session_id,
+                    bid_id=str(self._bid_card.bid_id),
+                    tenant_id=self._tenant_id or SHARED_TENANT,
+                    payload={},
+                    vault_root="",
+                ),
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
+                retry_policy=_DEFAULT_RETRY,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the workflow on S0.5
+            workflow.logger.warning("s0_5.materialize_failed err=%s", exc)
 
     async def _run_s2_scoping(self) -> None:
         assert self._bid_card is not None
