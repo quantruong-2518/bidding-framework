@@ -3,26 +3,57 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-26 (Conv 14 — S5/S6/S7 real LLM via LLMConversation 4-tier; 5 commits; host-verified through FakeLLMClient)
+## Last Updated: 2026-04-26 (Conv 15 — S11 retrospective real LLM + Obsidian KB write-back + S4 semantic-compare; 5 commits; host-verified through FakeLLMClient)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 (code) COMPLETE — proposal output is sale-ready when an LLM key is set. Remaining: Conv 15 (S11 retro + Obsidian sync) and Conv 16 (live smoke + Docker E2E). 4 feature gaps + 2 infra gaps + 4 carry-forwards. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 + Conv-15 (code) COMPLETE — proposal output is sale-ready, learning loop closed. 10 of 11 states real-LLM (S10 vendor portal still stub, blocked on customer API). 3 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
 
 ## >>> NEXT ACTION <<<
 
-**Recommendation: Conv 15 — S11 Retrospective real LLM + Obsidian bi-directional sync + S4 semantic compare.**
-- Closes the learning loop: bid outcome capture → Sonnet KB deltas → human-in-loop approval → Obsidian write-back.
-- Adds S4 semantic conflict detection (currently regex/keyword) — small LOC tactical add.
-- Code-only for unit tests; LLM smoke needs a provider key.
-- Estimated ~700 LOC + ~$0.05/bid LLM at smoke time. Detailed plan in `memory/project_phase_3_4_detailed_plan.md` Phases B–F.
+**Recommendation: Conv 16 — live smoke + Docker E2E + `.env.example` rebuild.**
+- Verifies the 4 carry-forwards in one go: 3.7d Anthropic-side `thinking` smoke, Conv-13 multi-tenant pytest, Conv-14 S5/S6/S7 pytest + LLM smoke, Conv-15 S11 + S4 pytest + LLM smoke + KB write-back end-to-end.
+- Needs **at least one** of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / Docker daemon. The `.env.example` rebuild is permission-blocked on `src/` — defer if not lifted.
+- After Conv 16: post-pilot path opens (Conv 17 S10 vendor portal when first customer's API is known; Conv 18 Phase 3.6 Helm when cluster procured).
 
-Path-to-pilot (2 conversations remaining):
-- **Conv 15**: S11 retrospective real LLM + Obsidian write-back + S4 semantic compare. ~$0.05/bid.
-- **Conv 16**: live smoke (Anthropic side) + Docker E2E + `.env.example` rebuild. Needs `ANTHROPIC_API_KEY` + Docker + permission lift.
+Path-to-pilot (1 conversation remaining):
+- **Conv 16**: live smoke + Docker E2E + `.env.example` rebuild.
 
 Detour gates (jump if resource arrives):
 - ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
 - ✅ K8s cluster arrives → **Conv 18** (Phase 3.6 Helm + HPA + cert-manager).
 - ✅ Cluster + k6 runner → **Conv 19** (Phase 3.7-K8s load suite).
+
+### Conv 15 — S11 retrospective real LLM + Obsidian KB write-back + S4 semantic compare (2026-04-26)
+**Trigger:** path-to-pilot. Conv 14 closed S5/S6/S7 real-LLM; Conv 15 closes the learning loop (retrospective produces actionable KB deltas that land in the vault) and tightens cross-stream conflict detection (regex → LLM-augmented semantic compare).
+
+**Locked design choices:**
+- **S11 = single flagship turn.** Reflection is reasoning-heavy but the input is small enough; no critique pass needed for v1 (the kb_deltas frontmatter is the audit trail).
+- **S4 = augment, NOT replace.** Heuristic R1/R2/R3 stays as the deterministic floor; the LLM adds semantic conflicts on top. Topic dedup is case-insensitive so an LLM emitting `API_LAYER_PROTOCOL` doesn't slip past the heuristic `api_layer_protocol`.
+- **Obsidian write-back is best-effort.** Vault outage logs + continues; the workflow never fails on a vault problem. Writes are atomic (temp + `os.replace`) so half-written notes never appear.
+- **AI provenance is the load-bearing flag.** Every KBDelta lands with `ai_generated: true` + `approved: false` in frontmatter. Ingestion will hold them out of prod KB until a future-conv human-in-loop step flips `approved`.
+- **Wrapper owns vault path.** `KBDelta.target_path` defaults to empty so the LLM can omit it; `_normalise_kb_deltas` always rewrites to `lessons/<bid_id>-<delta_id>.md`. The LLM never owns vault layout.
+- **RetrospectiveInput stays additive.** Stub path uses only `submission`; real-LLM path consumes whatever optional fields the workflow can supply (so Bid-S that skipped S5/S7 still works).
+
+**Commits (5 total):**
+1. **`feat(workflows): KBDelta DTO + widen RetrospectiveDraft + RetrospectiveInput`** (`a2ca038`) — additive only. `KBDelta` joins exports. Legacy `kb_updates: list[str]` preserved alongside the new `kb_deltas: list[KBDelta]`.
+2. **`feat(kb_writer): bi-directional Obsidian KB-delta write-back`** (`c733e26`) — `kb_writer/kb_delta.py` (`write_kb_deltas`, `_safe_slug`, `LESSONS_SUBDIR`). Per-delta failure isolation; atomic temp + replace; tenant_id frontmatter included. 5 specs.
+3. **`feat(ai-service): S11 retrospective real LLM via flagship tier`** (`481e9ab`) — `agents/retrospective_agent.py` (`run_retrospective_agent` + `_normalise_kb_deltas` + `_coerce_outcome`) + prompt + activity rewrite + workflow input widening + 7 specs. Activity calls `_persist_kb_deltas` after agent success.
+4. **`feat(ai-service): S4 semantic LLM-compare augment via small tier`** (`386cbf1`) — `agents/convergence_agent.py` (`run_semantic_compare` returns `(new_conflicts, cost_usd)`, silent on failure) + prompt + augment hook in `convergence_activity` + 5 specs. Heuristic conflicts always run; LLM merges fresh topics on top.
+
+**Host-verified invariants (no Docker, no temporalio):**
+- DTOs: `KBDelta` defaults (`ai_generated=True`, `approved=False`, `target_path=""`), `RetrospectiveDraft` widening backwards-compat, `RetrospectiveInput` optional-fields backwards-compat.
+- `kb_writer.kb_delta`: `_safe_slug` matrix, batch write under `lessons/`, explicit `tenant_id` flow, empty-noop, per-delta failure isolation.
+- S11: lessons + kb_deltas emission, flagship tier + trace_id wiring, duplicate-id renaming, unknown outcome → PENDING coercion, empty-lessons raise, garbage-JSON raise, optional WBS body inclusion in user payload.
+- S4: fresh-only return (heuristic dedup), parse-failure silent fallback, send-exception silent fallback, zero-new-conflicts success path, case-insensitive topic dedup.
+
+**Total host-verified: 23 inline assertions PASS.**
+
+**Deferred verification (carry-forward — Conv 16):** the 17 new pytest specs (`test_retrospective_agent.py` 7 + `test_kb_delta.py` 5 + `test_convergence_agent.py` 5) need Docker because conftest pulls in `temporalio` via `activities.notify`. Same constraint as every prior phase.
+
+**Operating model after Conv 15:**
+- **10 of 11 states use real LLM with stub fallback.** Only S10 vendor portal is still stub (blocked on customer-specific API).
+- **Closed learning loop.** Bid completes → S11 emits structured KBDeltas → wrapper persists them to `kb-vault/lessons/<bid_id>-<delta_id>.md` with `ai_generated: true` → next ingestion run picks them up but holds them out of prod KB until a reviewer approves. The vault → AI direction (re-index on file change) has worked since Phase 2.7.
+- **Cross-stream conflict detection** now combines deterministic heuristics with LLM-detected semantic gaps. Both run; both are visible in `ConvergenceReport.conflicts`.
+- **Cost transparency unchanged from Conv 14**: each artifact carries `llm_cost_usd` + `llm_tier_used` (None when stub fallback ran).
 
 ### Conv 14 — S5 / S6 / S7 real LLM via LLMConversation 4-tier (2026-04-26)
 **Trigger:** path-to-pilot. After Conv 13 closed the multi-tenant gate, the next sale-readiness lever was replacing the deterministic stubs at `activities/{solution_design,wbs,commercial}.py` so the proposal output reflects each RFP rather than a fixed template.
