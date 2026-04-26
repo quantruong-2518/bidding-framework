@@ -33,6 +33,7 @@ def _sample_input() -> StreamInput:
         client_name="Acme Bank",
         industry="banking",
         region="APAC",
+        tenant_id="acme-bank",
         requirements=[
             RequirementAtom(
                 id="REQ-001",

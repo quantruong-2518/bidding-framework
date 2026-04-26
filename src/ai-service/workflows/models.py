@@ -40,6 +40,9 @@ class BidCard(BaseModel):
     technology_keywords: list[str] = Field(default_factory=list)
     estimated_profile: BidProfile
     requirements_raw: list[str] = Field(default_factory=list)
+    # Phase 3.4-A multi-tenant override; when None the workflow falls back to
+    # slugify(client_name). Set explicitly to disambiguate clients that share a name.
+    tenant_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
 

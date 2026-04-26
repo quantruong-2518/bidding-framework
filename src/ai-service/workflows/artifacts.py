@@ -264,6 +264,9 @@ class StreamInput(BaseModel):
     client_name: str
     industry: str
     region: str
+    # Phase 3.4-A: required so KB retrieval enforces multi-tenant isolation.
+    # Workflow derives this from BidCard.tenant_id (override) or slugify(client_name).
+    tenant_id: str
     requirements: list[RequirementAtom] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     deadline: datetime

@@ -15,6 +15,7 @@ from config.qdrant import (
     get_qdrant_settings,
 )
 from rag.embeddings import get_dense_embedder, get_sparse_embedder
+from rag.tenant import SHARED_TENANT
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,9 @@ _UPSERT_BATCH = 64
 class DocumentMetadata(BaseModel):
     """Structured metadata indexed alongside each chunk."""
 
+    # Phase 3.4-A: payload column kb_search filters on. None falls back to
+    # SHARED_TENANT at index time so legacy seed data stays cross-tenant.
+    tenant_id: str | None = None
     client: str | None = None
     domain: str | None = None
     project_id: str | None = None
@@ -138,6 +142,10 @@ async def index_documents(  # type: ignore[no-untyped-def]
             **doc.metadata.model_dump(exclude_none=True, exclude={"extra"}),
             **doc.metadata.extra,
         }
+        # Phase 3.4-A: every chunk MUST carry a tenant_id so cross-tenant
+        # leakage is impossible at filter time. Default to SHARED_TENANT
+        # for cross-tenant content (lessons/, technologies/, …).
+        payload.setdefault("tenant_id", SHARED_TENANT)
         point = qm.PointStruct(
             id=_chunk_point_id(doc.id, chunk_idx),
             vector={
@@ -198,6 +206,7 @@ async def index_markdown_file(  # type: ignore[no-untyped-def]
     overrides = metadata_overrides or {}
 
     metadata = DocumentMetadata(
+        tenant_id=overrides.get("tenant_id") or fm.get("tenant_id"),
         client=overrides.get("client") or fm.get("client"),
         domain=overrides.get("domain") or fm.get("domain"),
         project_id=overrides.get("project_id") or fm.get("project_id"),

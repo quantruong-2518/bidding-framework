@@ -74,6 +74,7 @@ async def retrieve_similar(state: BAState) -> BAState:
     query = _retrieval_query(req)
     hits = await kb_search_mod.kb_search(
         query=query,
+        tenant_id=req.tenant_id,
         domain=req.industry.lower() or None,
         client=req.client_name or None,
         final_k=5,

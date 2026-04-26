@@ -13,6 +13,11 @@ from ingestion.link_extractor import build_edges
 from ingestion.vault_parser import ParsedNote, parse_note
 from ingestion.vault_scanner import scan_vault
 from ingestion.watcher import VaultWatcher
+from rag.tenant import (
+    SHARED_TENANT,
+    derive_tenant_id_from_relative_path,
+    slugify,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,14 @@ def _frontmatter_to_overrides(note: ParsedNote) -> dict[str, Any]:
         overrides["id"] = overrides["project_id"]
     else:
         overrides["id"] = note.path.stem
+    # Phase 3.4-A: tenant_id is the multi-tenant filter column on Qdrant payload.
+    # Frontmatter override wins; otherwise derive from kb-vault layout convention
+    # (clients/<tenant>/... or legacy clients/<tenant>.md → tenant; else shared).
+    fm_tenant = fm.get("tenant_id")
+    if isinstance(fm_tenant, str) and fm_tenant.strip():
+        overrides["tenant_id"] = slugify(fm_tenant) or SHARED_TENANT
+    else:
+        overrides["tenant_id"] = derive_tenant_id_from_relative_path(note.relative_path)
     return overrides
 
 

@@ -123,6 +123,7 @@ with workflow.unsafe.imports_passed_through():
     from activities.triage import triage_activity
     from activities.wbs import wbs_activity
     from kb_writer.models import WorkspaceInput
+    from rag.tenant import SHARED_TENANT, slugify
     from workflows.artifacts import (
         AssemblyInput,
         BusinessRequirementsDraft,
@@ -386,11 +387,18 @@ class BidWorkflow:
         assert self._bid_card is not None and self._scoping is not None
         self._state = "S3"
 
+        # Phase 3.4-A: derive tenant_id once and propagate to every stream.
+        tenant_id = (
+            self._bid_card.tenant_id
+            or slugify(self._bid_card.client_name)
+            or SHARED_TENANT
+        )
         stream_input = StreamInput(
             bid_id=self._bid_card.bid_id,
             client_name=self._bid_card.client_name,
             industry=self._bid_card.industry,
             region=self._bid_card.region,
+            tenant_id=tenant_id,
             requirements=self._scoping.requirement_map,
             constraints=[],
             deadline=self._bid_card.deadline,

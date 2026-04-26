@@ -166,6 +166,11 @@ async def test_initial_index_invokes_indexer_for_each_md(tmp_path: Path) -> None
     assert overrides["year"] == 2024
     assert overrides["doc_type"] == "project"
     assert overrides["id"] == "proj-alpha-01"
+    # Phase 3.4-A: every override carries tenant_id; non-clients/ paths default
+    # to "shared" so they remain visible across tenants.
+    assert overrides["tenant_id"] == "shared"
+    risk_call = next(c for c in calls if c[0].endswith("risk.md"))
+    assert risk_call[1]["tenant_id"] == "shared"
     # Graph populated.
     snapshot = service.graph.snapshot()
     assert snapshot.note_count == 4

@@ -17,7 +17,7 @@ from rag.embeddings import get_dense_embedder, get_sparse_embedder
 
 logger = logging.getLogger(__name__)
 
-_FILTER_EQ_KEYS = ("client", "domain", "project_id", "year", "doc_type")
+_FILTER_EQ_KEYS = ("tenant_id", "client", "domain", "project_id", "year", "doc_type")
 
 
 class RetrievalQuery(BaseModel):
