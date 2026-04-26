@@ -139,6 +139,7 @@ services:
         condition: service_healthy
     environment:
       PORT: "3000"
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
       # Realm's frontendUrl forces token `iss` claim to the public URL
       # regardless of caller, so JwtStrategy must verify against that value.
       # JWKS fetch still goes through the internal `keycloak:8080` since
@@ -153,6 +154,16 @@ services:
       # Phase 3.5 — browser-facing Langfuse URL; 404 from /bids/:id/trace-url
       # when unset (frontend hides the button).
       LANGFUSE_WEB_URL: ${LANGFUSE_WEB_URL:-}
+      # Phase 3.3 audit-dashboard aggregator hits Langfuse over HTTP — keys
+      # unset → aggregator returns warnings[] but the dashboard still loads.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Conv 16a CQRS projection consumer tuning. Defaults are fine for
+      # pre-pilot traffic; "1" disables the consumer entirely (smoke tests).
+      BID_PROJECTION_CONSUMER_BATCH: ${BID_PROJECTION_CONSUMER_BATCH:-100}
+      BID_PROJECTION_CONSUMER_BLOCK_MS: ${BID_PROJECTION_CONSUMER_BLOCK_MS:-5000}
+      BID_PROJECTION_CONSUMER_DISABLED: ${BID_PROJECTION_CONSUMER_DISABLED:-}
     ports:
       - "3000:3000"
     healthcheck:
@@ -178,7 +189,25 @@ services:
       temporal:
         condition: service_healthy
     environment:
+      # Phase 3.7 — provider switch + per-provider keys. is_llm_available()
+      # checks the env var matching LLM_PROVIDER; unmatched provider → stub
+      # fallback path keeps the workflow running.
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # Optional per-tier model overrides (Phase 3.7d). Defaults follow the
+      # latest family for the chosen provider.
+      LLM_MODEL_NANO: ${LLM_MODEL_NANO:-}
+      LLM_MODEL_SMALL: ${LLM_MODEL_SMALL:-}
+      LLM_MODEL_FLAGSHIP: ${LLM_MODEL_FLAGSHIP:-}
+      LLM_MODEL_DEEP: ${LLM_MODEL_DEEP:-}
+      # Optional RAG rerank keys.
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       QDRANT_URL: http://qdrant:6333
       TEMPORAL_HOST: temporal:7233
       REDIS_URL: redis://redis:6379
@@ -225,7 +254,20 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # Phase 3.7 — provider switch + per-provider keys (mirrors ai-service).
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      LLM_MODEL_NANO: ${LLM_MODEL_NANO:-}
+      LLM_MODEL_SMALL: ${LLM_MODEL_SMALL:-}
+      LLM_MODEL_FLAGSHIP: ${LLM_MODEL_FLAGSHIP:-}
+      LLM_MODEL_DEEP: ${LLM_MODEL_DEEP:-}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       QDRANT_URL: http://qdrant:6333
       TEMPORAL_HOST: temporal:7233
       REDIS_URL: redis://redis:6379
