@@ -181,76 +181,89 @@ def _safe_file_id(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_preview(input: ContextSynthesisInput) -> ContextSynthesisOutput:
-    """End-to-end parse pipeline. Caller persists output to parse_sessions."""
-    parsed_files: list[ParsedFile] = []
-    for upload in input.files:
-        parsed = _dispatch_adapter(upload)
-        parsed.language = input.lang  # honour caller's language hint
-        parsed_files.append(parsed)
+async def _process_file_for_preview(
+    upload: IntakeFile,
+    *,
+    parse_session_id: str,
+    tenant_id: str,
+    lang: Literal["en", "vi"],
+) -> tuple[ParsedFile, list[tuple[AtomFrontmatter, str]]]:
+    """Single-file slice of the preview pipeline: adapter dispatch +
+    role classify + atom extract.
 
-    # Step 1 — classify each file's role (LLM nano or heuristic).
+    Pulled out of :func:`_run_preview` so the FastAPI router can drive an
+    incremental loop — it processes files one at a time and updates the
+    in-memory parse tracker after each, so the frontend's 2 s preview
+    poll sees the atom count grow before synth fires.
+
+    Synth + conflict-detect + manifest assembly intentionally stay in
+    :func:`_finalize_preview` — they need the full atom set to be useful
+    and re-running the flagship synth per-file would inflate cost ~3-5x.
+    """
+    from parsers.atom_extractor import extract_atoms
     from parsers.file_classifier import classify_file_role
 
-    for pf in parsed_files:
-        try:
-            pf.role = await classify_file_role(
-                pf, bid_id_for_trace=input.parse_session_id
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "context_synthesis.classify_failed file=%s err=%s", pf.name, exc
-            )
-            pf.role = "reference"
-
-    # Step 2 — extract atoms per file (small LLM or heuristic).
-    from parsers.atom_extractor import extract_atoms
-
-    all_atoms: list[tuple[AtomFrontmatter, str]] = []
-    per_file_atoms: dict[str, int] = {}
-    per_file_conf: dict[str, list[float]] = {}
-    for pf in parsed_files:
-        atoms = await extract_atoms(
-            pf,
-            bid_id=input.parse_session_id,
-            tenant_id=input.tenant_id,
-            lang=input.lang,
-            bid_id_for_trace=input.parse_session_id,
+    parsed = _dispatch_adapter(upload)
+    parsed.language = lang  # honour caller's language hint
+    try:
+        parsed.role = await classify_file_role(
+            parsed, bid_id_for_trace=parse_session_id
         )
-        all_atoms.extend(atoms)
-        per_file_atoms[pf.file_id] = len(atoms)
-        per_file_conf[pf.file_id] = [a[0].extraction.confidence for a in atoms]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "context_synthesis.classify_failed file=%s err=%s", parsed.name, exc
+        )
+        parsed.role = "reference"
 
-    # Step 3 — bid card suggestion. We borrow rfp_extractor on the
-    # primary RFP file so the synth turn has a hook for client / industry.
+    atoms = await extract_atoms(
+        parsed,
+        bid_id=parse_session_id,
+        tenant_id=tenant_id,
+        lang=lang,
+        bid_id_for_trace=parse_session_id,
+    )
+    return parsed, atoms
+
+
+async def _finalize_preview(
+    *,
+    parse_session_id: str,
+    tenant_id: str,
+    bid_id: str | None,
+    lang: Literal["en", "vi"],
+    parsed_files: list[ParsedFile],
+    all_atoms: list[tuple[AtomFrontmatter, str]],
+    per_file_atoms: dict[str, int],
+    per_file_conf: dict[str, list[float]],
+) -> ContextSynthesisOutput:
+    """Run synth + conflict-detect + manifest from accumulated state.
+
+    Both :func:`_run_preview` (batch) and the router's incremental loop
+    end at this single call so the output shape is identical regardless
+    of how the atoms were collected.
+    """
     bid_card = _suggested_bid_card(parsed_files)
 
-    # Step 4 — synth (flagship + small critique, or template stub).
     synth: SynthOutput = await synthesize_context(
         parsed_files,
         all_atoms,
         bid_card,
-        lang=input.lang,
-        bid_id_for_trace=input.parse_session_id,
+        lang=lang,
+        bid_id_for_trace=parse_session_id,
     )
-
-    # Step 5 — cross-source conflict detection.
     conflicts: list[ConflictItem] = await detect_conflicts(
         [a[0] for a in all_atoms],
         parsed_files,
-        bid_id_for_trace=input.parse_session_id,
+        bid_id_for_trace=parse_session_id,
     )
-
-    # Step 6 — assemble manifest (no object_store_uri at preview time).
     manifest = _build_manifest(
         parsed_files=parsed_files,
-        bid_id=input.bid_id or "",
-        tenant_id=input.tenant_id,
-        session_id=input.parse_session_id,
+        bid_id=bid_id or "",
+        tenant_id=tenant_id,
+        session_id=parse_session_id,
         per_file_atoms=per_file_atoms,
         per_file_conf=per_file_conf,
     )
-
     sources_preview = [
         {
             "file_id": pf.file_id,
@@ -262,10 +275,9 @@ async def _run_preview(input: ContextSynthesisInput) -> ContextSynthesisOutput:
         }
         for pf in parsed_files
     ]
-
     return ContextSynthesisOutput(
-        parse_session_id=input.parse_session_id,
-        bid_id=input.bid_id,
+        parse_session_id=parse_session_id,
+        bid_id=bid_id,
         mode="preview",
         atoms=[
             AtomEntry(frontmatter=front, body_markdown=body)
@@ -277,6 +289,38 @@ async def _run_preview(input: ContextSynthesisInput) -> ContextSynthesisOutput:
         conflicts=conflicts,
         manifest=manifest,
         sources_preview=sources_preview,
+    )
+
+
+async def _run_preview(input: ContextSynthesisInput) -> ContextSynthesisOutput:
+    """End-to-end parse pipeline. Caller persists output to parse_sessions."""
+    parsed_files: list[ParsedFile] = []
+    all_atoms: list[tuple[AtomFrontmatter, str]] = []
+    per_file_atoms: dict[str, int] = {}
+    per_file_conf: dict[str, list[float]] = {}
+    for upload in input.files:
+        parsed, atoms = await _process_file_for_preview(
+            upload,
+            parse_session_id=input.parse_session_id,
+            tenant_id=input.tenant_id,
+            lang=input.lang,
+        )
+        parsed_files.append(parsed)
+        all_atoms.extend(atoms)
+        per_file_atoms[parsed.file_id] = len(atoms)
+        per_file_conf[parsed.file_id] = [
+            front.extraction.confidence for front, _ in atoms
+        ]
+
+    return await _finalize_preview(
+        parse_session_id=input.parse_session_id,
+        tenant_id=input.tenant_id,
+        bid_id=input.bid_id,
+        lang=input.lang,
+        parsed_files=parsed_files,
+        all_atoms=all_atoms,
+        per_file_atoms=per_file_atoms,
+        per_file_conf=per_file_conf,
     )
 
 

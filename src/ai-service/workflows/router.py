@@ -267,29 +267,183 @@ async def _hydrate_files_from_object_store(
     return hydrated
 
 
+def _atom_preview_payload(
+    atoms: list[tuple[Any, str]],
+    *,
+    sample_limit: int = 10,
+) -> dict[str, Any]:
+    """Shape a partial AtomsPreview from the running atom accumulator.
+
+    Mirrors the §3.6 ``atoms_preview`` block so api-gateway's PARSING-time
+    preview merge can drop this in directly. Sample is capped — frontend
+    only renders first N rows during PARSING anyway.
+    """
+    by_type: dict[str, int] = {}
+    by_priority: dict[str, int] = {}
+    low_confidence_count = 0
+    sample: list[dict[str, Any]] = []
+    for idx, (front, body) in enumerate(atoms):
+        atype = getattr(front, "type", "unclear")
+        prio = getattr(front, "priority", "MUST")
+        by_type[atype] = by_type.get(atype, 0) + 1
+        by_priority[prio] = by_priority.get(prio, 0) + 1
+        conf = getattr(front.extraction, "confidence", 1.0)
+        if conf < 0.6:
+            low_confidence_count += 1
+        if idx < sample_limit:
+            sample.append(
+                {
+                    "id": front.id,
+                    "type": atype,
+                    "priority": prio,
+                    "category": getattr(front, "category", ""),
+                    "source_file": (
+                        front.source.file if getattr(front, "source", None) else ""
+                    ),
+                    "body_md": body,
+                    "confidence": conf,
+                    "split_recommended": getattr(front, "split_recommended", False),
+                }
+            )
+    return {
+        "total": len(atoms),
+        "by_type": by_type,
+        "by_priority": by_priority,
+        "low_confidence_count": low_confidence_count,
+        "sample": sample,
+    }
+
+
 async def _run_parse_in_background(req: _ParseStartRequest) -> None:
-    """Long-running task spawned by POST /parse/start. Updates tracker + posts."""
+    """Background parse with incremental atom append.
+
+    Per Conv-19: we process each uploaded file independently and update
+    the in-memory ``_PARSE_TRACKER`` after every file. The api-gateway's
+    preview endpoint merges this tracker payload into its 2 s response so
+    the frontend sees the atom count grow before synth fires.
+
+    Synth + conflict + manifest are still single-shot at the end — the
+    flagship synth call costs ~$0.024 and re-running per file would push
+    the per-bid budget from $0.05 → $0.20+ for limited UX gain.
+    """
     from activities.context_synthesis import (
-        ContextSynthesisInput,
-        _run_preview,
+        AtomEntry,
+        ContextSynthesisOutput,
+        _finalize_preview,
+        _process_file_for_preview,
     )
+    from workflows.base import AtomFrontmatter, ParsedFile
 
     sid = req.parse_session_id
-    _PARSE_TRACKER[sid] = _ParseStatus(
-        status="PARSING",
-        session_id=sid,
-        progress={"stage": "starting", "percent": 0},
-    )
+    total_files = len(req.files)
+
+    def _set_progress(
+        stage: str,
+        files_processed: int,
+        atoms_so_far: int,
+        partial_atoms: list[tuple[AtomFrontmatter, str]],
+        partial_sources: list[ParsedFile],
+    ) -> None:
+        _PARSE_TRACKER[sid] = _ParseStatus(
+            status="PARSING",
+            session_id=sid,
+            progress={
+                "stage": stage,
+                "files_total": total_files,
+                "files_processed": files_processed,
+                "atoms_so_far": atoms_so_far,
+                "percent": int(
+                    (files_processed / total_files) * 90
+                ) if total_files > 0 else 0,
+            },
+            result={
+                "atoms_preview": _atom_preview_payload(partial_atoms),
+                "sources_preview": [
+                    {
+                        "file_id": pf.file_id,
+                        "name": pf.name,
+                        "role": pf.role,
+                        "language": pf.language,
+                        "page_count": pf.page_count,
+                        "atoms_extracted": sum(
+                            1 for front, _ in partial_atoms if front.source.file == pf.name
+                        ),
+                    }
+                    for pf in partial_sources
+                ],
+            },
+        )
+
+    _set_progress("starting", 0, 0, [], [])
     try:
         hydrated_files = await _hydrate_files_from_object_store(req.files)
-        out = await _run_preview(
-            ContextSynthesisInput(
-                mode="preview",
-                parse_session_id=sid,
-                tenant_id=req.tenant_id,
-                lang=req.lang,
-                files=hydrated_files,
+
+        parsed_files: list[ParsedFile] = []
+        all_atoms: list[tuple[AtomFrontmatter, str]] = []
+        per_file_atoms: dict[str, int] = {}
+        per_file_conf: dict[str, list[float]] = {}
+
+        for idx, file in enumerate(hydrated_files):
+            display = file.display_name() if hasattr(file, "display_name") else file.name
+            _set_progress(
+                f"parsing {idx + 1}/{total_files}: {display}",
+                idx,
+                len(all_atoms),
+                all_atoms,
+                parsed_files,
             )
+            try:
+                parsed, atoms = await _process_file_for_preview(
+                    file,
+                    parse_session_id=sid,
+                    tenant_id=req.tenant_id,
+                    lang=req.lang,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break the batch
+                logger.warning(
+                    "parse.file_failed sid=%s file=%s err=%s",
+                    sid,
+                    display,
+                    exc,
+                )
+                continue
+            parsed_files.append(parsed)
+            all_atoms.extend(atoms)
+            per_file_atoms[parsed.file_id] = len(atoms)
+            per_file_conf[parsed.file_id] = [
+                front.extraction.confidence for front, _ in atoms
+            ]
+            _set_progress(
+                f"extracted {len(all_atoms)} atoms ({idx + 1}/{total_files} files)",
+                idx + 1,
+                len(all_atoms),
+                all_atoms,
+                parsed_files,
+            )
+
+        # Single-pass synth + conflicts + manifest assembly. Tracker stays
+        # PARSING until this returns so the frontend's banner stays accurate.
+        _PARSE_TRACKER[sid] = _ParseStatus(
+            status="PARSING",
+            session_id=sid,
+            progress={
+                "stage": "synthesizing context",
+                "files_total": total_files,
+                "files_processed": total_files,
+                "atoms_so_far": len(all_atoms),
+                "percent": 92,
+            },
+            result=_PARSE_TRACKER[sid].result if sid in _PARSE_TRACKER else None,
+        )
+        out: ContextSynthesisOutput = await _finalize_preview(
+            parse_session_id=sid,
+            tenant_id=req.tenant_id,
+            bid_id=None,
+            lang=req.lang,
+            parsed_files=parsed_files,
+            all_atoms=all_atoms,
+            per_file_atoms=per_file_atoms,
+            per_file_conf=per_file_conf,
         )
         result_payload = out.model_dump(mode="json")
         _PARSE_TRACKER[sid] = _ParseStatus(
