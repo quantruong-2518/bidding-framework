@@ -8,6 +8,7 @@ import {
   Briefcase,
   PlusCircle,
   ShieldCheck,
+  Upload,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
 import { useAuthStore } from '@/lib/auth/store';
@@ -23,6 +24,7 @@ const ITEMS: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/bids', label: 'Bids', icon: Briefcase },
   { href: '/bids/new', label: 'New bid', icon: PlusCircle },
+  { href: '/bids/new/upload', label: 'New bid (parse)', icon: Upload },
   { href: '/audit', label: 'Audit', icon: ShieldCheck, adminOnly: true },
 ];
 
