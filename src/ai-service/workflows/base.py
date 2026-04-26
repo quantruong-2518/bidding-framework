@@ -87,17 +87,34 @@ AtomPriority = Literal["MUST", "SHOULD", "COULD", "WONT"]
 class IntakeFile(BaseModel):
     """One uploaded file en route from api-gateway to ai-service.
 
-    ``content_b64`` (base64) is the wire format; activities decode to bytes
-    once before dispatch to the matching adapter. ``mime`` is the content-type
-    hint from the upload; the dispatcher falls back to filename extension when
-    the hint is missing or generic (e.g. ``application/octet-stream``).
+    Two wire formats are accepted:
+
+    1. ``content_b64`` (base64) — inline byte payload. Used by unit tests and
+       small-file dev paths.
+    2. ``object_store_uri`` (``s3://bucket/key``) — MinIO/S3 reference. Used
+       by the production api-gateway path (see ``parse.controller.ts``):
+       the gateway uploads the multipart blob to MinIO under
+       ``parse_sessions/<sid>/<file_id>.<ext>``, then sends only the URI.
+       The router pre-fetches bytes via ``tools.object_store`` before
+       handing the file to ``_dispatch_adapter``.
+
+    ``mime`` is the content-type hint; the dispatcher falls back to filename
+    extension when the hint is missing or generic. ``original_name`` mirrors
+    the gateway field of the same name and falls back to ``name`` if absent.
     """
 
-    name: str
+    name: str = ""
+    original_name: str | None = None
+    file_id: str | None = None
     mime: str = ""
     content_b64: str = ""
+    object_store_uri: str | None = None
     size_bytes: int = 0
     sha256: str | None = None
+
+    def display_name(self) -> str:
+        """Stable filename for adapter routing + manifest entries."""
+        return self.name or self.original_name or self.file_id or "unknown"
 
 
 class ParsedFile(BaseModel):

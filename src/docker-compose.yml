@@ -162,9 +162,23 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       PORT: "3000"
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      # S0.5 Wave 1 — MinIO/S3 wiring for parse-session originals.
+      # Defaults match the in-compose minio service. Swap OBJECT_STORE_BACKEND
+      # to `s3` + supply AWS_* envs for production.
+      OBJECT_STORE_BACKEND: ${OBJECT_STORE_BACKEND:-minio}
+      OBJECT_STORE_ENDPOINT: ${OBJECT_STORE_ENDPOINT:-minio:9000}
+      OBJECT_STORE_ACCESS_KEY: ${MINIO_ROOT_USER:-bidframework}
+      OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-bidframework_dev}
+      OBJECT_STORE_REGION: ${OBJECT_STORE_REGION:-us-east-1}
+      OBJECT_STORE_BUCKET_BIDS: ${OBJECT_STORE_BUCKET_BIDS:-bid-originals}
+      # Vault path passed to ai-service on confirm. Must match the ai-service
+      # bind mount below (`./kb-vault:/kb-vault`).
+      KB_VAULT_ROOT: /kb-vault
       # Realm's frontendUrl forces token `iss` claim to the public URL
       # regardless of caller, so JwtStrategy must verify against that value.
       # JWKS fetch still goes through the internal `keycloak:8080` since
@@ -213,6 +227,8 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       # Phase 3.7 — provider switch + per-provider keys. is_llm_available()
       # checks the env var matching LLM_PROVIDER; unmatched provider → stub
@@ -238,6 +254,16 @@ services:
       REDIS_URL: redis://redis:6379
       POSTGRES_URL: postgresql://bidding:bidding@postgres:5432/bidding_db
       KB_VAULT_PATH: /kb-vault
+      # S0.5 Wave 1 — MinIO/S3 wiring so /workflows/parse/start can fetch
+      # uploaded originals by the s3:// URI api-gateway sends. Stub mode
+      # (envs unset) keeps unit-test path working but production parse
+      # without these is a silent no-op.
+      OBJECT_STORE_BACKEND: ${OBJECT_STORE_BACKEND:-minio}
+      OBJECT_STORE_ENDPOINT: ${OBJECT_STORE_ENDPOINT:-minio:9000}
+      OBJECT_STORE_ACCESS_KEY: ${MINIO_ROOT_USER:-bidframework}
+      OBJECT_STORE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-bidframework_dev}
+      OBJECT_STORE_REGION: ${OBJECT_STORE_REGION:-us-east-1}
+      OBJECT_STORE_BUCKET_BIDS: ${OBJECT_STORE_BUCKET_BIDS:-bid-originals}
       # Phase 3.5 — Langfuse observability. Keys unset by default: tracer
       # resolves to the no-op path and emits zero HTTP traffic.
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}

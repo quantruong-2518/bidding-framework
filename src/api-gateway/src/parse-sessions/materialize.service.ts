@@ -59,8 +59,11 @@ export class MaterializeService {
     private readonly config: ConfigService,
   ) {
     this.bucket = this.sessions.getBucket();
+    // Default matches the ai-service container mount (`/kb-vault`) and the
+    // host bind in docker-compose (`./kb-vault:/kb-vault`). Override via
+    // KB_VAULT_ROOT env when running outside compose.
     this.vaultRoot =
-      this.config.get<string>('KB_VAULT_ROOT') ?? '/vault/kb-vault';
+      this.config.get<string>('KB_VAULT_ROOT') ?? '/kb-vault';
   }
 
   /**

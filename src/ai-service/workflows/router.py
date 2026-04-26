@@ -203,6 +203,70 @@ class _ParseMaterializeRequest(BaseModel):
     vault_root: str = ""
 
 
+async def _hydrate_files_from_object_store(
+    files: list[IntakeFile],
+) -> list[IntakeFile]:
+    """Fetch bytes from MinIO/S3 for any file that arrived as a URI only.
+
+    The api-gateway uploads originals to MinIO before calling /parse/start,
+    so the wire payload typically carries ``object_store_uri`` with empty
+    ``content_b64``. This helper hydrates the bytes once into base64 so
+    the rest of the parse pipeline ([_run_preview → _dispatch_adapter])
+    keeps its existing ``content_b64``-only contract.
+
+    Stub-mode object store (no env / SDK missing) returns ``None`` here —
+    we leave the file as-is so the adapter falls back to TXT-empty.
+    """
+    import base64 as _b64
+
+    from tools.object_store import get_object_store
+
+    store = get_object_store()
+    if store.is_stub:
+        return files
+
+    hydrated: list[IntakeFile] = []
+    for file in files:
+        if file.content_b64 or not file.object_store_uri:
+            hydrated.append(file)
+            continue
+        bucket, _, key = file.object_store_uri.removeprefix("s3://").partition("/")
+        if not bucket or not key:
+            logger.warning(
+                "parse.object_store_uri_invalid sid_file=%s uri=%s",
+                file.display_name(),
+                file.object_store_uri,
+            )
+            hydrated.append(file)
+            continue
+        try:
+            data = await store.get_object(bucket, key)
+        except Exception as exc:  # noqa: BLE001 — never break the batch
+            logger.warning(
+                "parse.object_store_fetch_failed file=%s err=%s",
+                file.display_name(),
+                exc,
+            )
+            hydrated.append(file)
+            continue
+        if not data:
+            hydrated.append(file)
+            continue
+        encoded = _b64.b64encode(data).decode("ascii")
+        # Inject name fallback if api-gateway only sent original_name + file_id.
+        normalised_name = file.name or file.original_name or file.file_id or ""
+        hydrated.append(
+            file.model_copy(
+                update={
+                    "name": normalised_name,
+                    "content_b64": encoded,
+                    "size_bytes": len(data),
+                }
+            )
+        )
+    return hydrated
+
+
 async def _run_parse_in_background(req: _ParseStartRequest) -> None:
     """Long-running task spawned by POST /parse/start. Updates tracker + posts."""
     from activities.context_synthesis import (
@@ -217,13 +281,14 @@ async def _run_parse_in_background(req: _ParseStartRequest) -> None:
         progress={"stage": "starting", "percent": 0},
     )
     try:
+        hydrated_files = await _hydrate_files_from_object_store(req.files)
         out = await _run_preview(
             ContextSynthesisInput(
                 mode="preview",
                 parse_session_id=sid,
                 tenant_id=req.tenant_id,
                 lang=req.lang,
-                files=req.files,
+                files=hydrated_files,
             )
         )
         result_payload = out.model_dump(mode="json")
