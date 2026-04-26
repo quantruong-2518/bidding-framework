@@ -3,24 +3,72 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-26 (Conv 15 — S11 retrospective real LLM + Obsidian KB write-back + S4 semantic-compare; 5 commits; host-verified through FakeLLMClient)
+## Last Updated: 2026-04-26 (Conv 16a — Bid state CQRS projection: Postgres `bid_state_transitions` log + `bid_state_projection` read model + Redis-stream consumer; 211/211 Jest green; XADD host-verified; ai-service pytest deferred)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 + Conv-15 (code) COMPLETE — proposal output is sale-ready, learning loop closed. 10 of 11 states real-LLM (S10 vendor portal still stub, blocked on customer API). 3 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 + Conv-15 (code) + Conv-16a (CQRS projection) COMPLETE — proposal output is sale-ready, learning loop closed, bid state queryable via SQL projection. 10 of 11 states real-LLM (S10 vendor portal still stub, blocked on customer API). 3 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
 
 ## >>> NEXT ACTION <<<
 
-**Recommendation: Conv 16 — live smoke + Docker E2E + `.env.example` rebuild.**
-- Verifies the 4 carry-forwards in one go: 3.7d Anthropic-side `thinking` smoke, Conv-13 multi-tenant pytest, Conv-14 S5/S6/S7 pytest + LLM smoke, Conv-15 S11 + S4 pytest + LLM smoke + KB write-back end-to-end.
+**Recommendation: Conv 16b — live smoke + Docker E2E + `.env.example` rebuild.**
+- Verifies the 4 carry-forwards in one go: 3.7d Anthropic-side `thinking` smoke, Conv-13 multi-tenant pytest, Conv-14 S5/S6/S7 pytest + LLM smoke, Conv-15 S11 + S4 pytest + LLM smoke + KB write-back end-to-end. Conv-16a adds: 5 new pytest specs in `test_state_transition_xadd.py` + 1 Postgres migration smoke (`migration:run` + `\d bid_state_projection` + bid end-to-end → projection row at `S11_DONE`).
 - Needs **at least one** of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / Docker daemon. The `.env.example` rebuild is permission-blocked on `src/` — defer if not lifted.
-- After Conv 16: post-pilot path opens (Conv 17 S10 vendor portal when first customer's API is known; Conv 18 Phase 3.6 Helm when cluster procured).
+- After Conv 16b: post-pilot path opens (Conv 17 S10 vendor portal when first customer's API is known; Conv 18 Phase 3.6 Helm when cluster procured).
 
 Path-to-pilot (1 conversation remaining):
-- **Conv 16**: live smoke + Docker E2E + `.env.example` rebuild.
+- **Conv 16b**: live smoke + Docker E2E + `.env.example` rebuild.
 
 Detour gates (jump if resource arrives):
 - ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
 - ✅ K8s cluster arrives → **Conv 18** (Phase 3.6 Helm + HPA + cert-manager).
 - ✅ Cluster + k6 runner → **Conv 19** (Phase 3.7-K8s load suite).
+
+### Conv 16a — Bid state CQRS projection (Postgres + Redis Streams) (2026-04-26)
+**Trigger:** post-Conv-15 user wanted a system-level pattern for storing bid state. Plan locked in `memory/project_bid_state_projection_plan.md`. Temporal stays the source of truth for execution; Postgres `bid_state_transitions` (append-only log) + `bid_state_projection` (1 row/bid read model) are the read side. Sink is durable Redis Stream `bid.transitions` (XADD + XREADGROUP) — pub/sub stays for WebSocket fanout.
+
+**Locked design choices applied (from plan):**
+- 2 tables (transitions log = audit/replay; projection = SQL-fast read).
+- `transition_seq` is a `BidWorkflow` class counter — bumped before XADD; replay-deterministic.
+- Idempotency via `UNIQUE (bid_id, transition_seq)` + `INSERT ... ON CONFLICT DO NOTHING`. Pre-check in code so the cost rollup never double-sums on at-least-once redelivery.
+- Out-of-order delivery doesn't roll the projection backward — `lastTransitionSeq` is monotonic-forward-only; older-seq rows still get appended to the log (audit fidelity) but the projection ignores them.
+- Best-effort everywhere: PUBLISH and XADD failures both log + receipt-record but never raise to the workflow. Stream MAXLEN 1M (~30 days).
+- Terminal states `{S11_DONE, S9_BLOCKED, S1_NO_BID}` flip `is_terminal=true` + map to outcome `{COMPLETED, BLOCKED, NO_BID}`.
+- Endpoint `GET /bids/:id/state` is any-auth (no role guard) — projection holds no PII beyond what `GET /bids/:id` already returns.
+
+**Files added (10):**
+- `api-gateway/src/database/migrations/1714000000002-create-bid-state-projection.ts` — 2 tables + 6 indexes; reversible.
+- `api-gateway/src/bid-state-projection/bid-state-transition.entity.ts` — TypeORM entity (`numeric(12,6)` cost via transformer; `simple-json` artifactKeys).
+- `api-gateway/src/bid-state-projection/bid-state-projection.entity.ts` — 1-row-per-bid read model.
+- `api-gateway/src/bid-state-projection/bid-state.types.ts` — `TERMINAL_STATES`, `TERMINAL_OUTCOMES`, `ParsedTransitionEntry`, `BidStateView`.
+- `api-gateway/src/bid-state-projection/bid-state-projection.consumer.ts` — `BidStateProjectionConsumer` with `OnModuleInit` + `OnModuleDestroy` + XREADGROUP loop + transactional INSERT/UPSERT + safe XACK + parseEntry seam for tests + `BID_PROJECTION_CONSUMER_DISABLED=1` escape hatch.
+- `api-gateway/src/bid-state-projection/bid-state.service.ts` — read-side service.
+- `api-gateway/src/bid-state-projection/bid-state.controller.ts` — `GET /bids/:id/state` (any auth).
+- `api-gateway/src/bid-state-projection/bid-state-projection.module.ts` — module wiring.
+- `api-gateway/test/bid-state-projection.consumer.spec.ts` — 8 specs (insert+upsert, idempotent redelivery, terminal flip, cost rollup, out-of-order monotonic, malformed XACK, parseEntry NaN reject, ensureGroup BUSYGROUP no-op).
+- `api-gateway/test/bid-state.controller.spec.ts` — 3 specs (200 happy, 404 missing, terminal-outcome view).
+- `ai-service/tests/test_state_transition_xadd.py` — 6 specs incl. parametrized terminal-states (full payload contract + monotonic seq + XADD-fail tolerated + publish-fail tolerated + None-cost serialisation + terminal cleanly serialise).
+
+**Files modified (5):**
+- `ai-service/activities/state_transition.py` — widened `NotifyStateTransitionInput` (5 new fields, all defaulted for backward compat) + XADD parallel to PUBLISH + receipt now records `streamed`/`stream_error` separately.
+- `ai-service/workflows/bid_workflow.py` — `BidWorkflow.__init__` adds `_transition_seq=0`, `_prev_state=None`, `_tenant_id=None`. `run()` materialises tenant_id post-S0. `_notify_state_transition` bumps seq + passes `from_state`/`tenant_id`/`workflow_id`/`llm_cost_delta`. `_complete_phase(phase, llm_cost_delta=None)` with new `_cost_for(state)` helper that pulls cost off `HLDDraft` / `WBSDraft` / `PricingDraft` / `RetrospectiveDraft`.
+- `ai-service/tests/test_state_transition_activity.py` — extend `_FakeRedis` + `_BrokenRedis` with xadd stubs (existing 3 specs unchanged).
+- `api-gateway/src/database/database.module.ts` — register 2 new entities + new migration.
+- `api-gateway/src/app.module.ts` — import `BidStateProjectionModule`.
+
+**Test verification:**
+- Jest: **211/211 pass** (was 200/200 + 11 new specs).
+- Host-stubbed pytest seam: `_stream_fields` payload shape verified for both default-only and full-field input.
+- Pytest specs (5+1 = 6 new in `test_state_transition_xadd.py`): defer to Docker (joins existing carry-forwards from Conv 13/14/15) — conftest pulls `temporalio` via `activities.notify`.
+
+**Carry-forwards opened by Conv-16a:**
+1. Run the 6 new pytest specs in Docker (joins the 49 specs from Conv 13/14/15).
+2. Migration smoke: `npm run typeorm:migration:run` then `\d bid_state_transitions` + `\d bid_state_projection` to confirm DDL applied.
+3. End-to-end smoke: trigger 1 bid via `POST /bids/:id/workflow` with Docker up; verify `psql -c "SELECT current_state, last_transition_seq, total_llm_cost_usd FROM bid_state_projection WHERE bid_id='<id>'"` returns `S11_DONE` + seq ≈ 16. `GET /bids/:id/state` returns `is_terminal=true`.
+4. Consumer crash test: kill api-gateway mid-run → restart → XPENDING claim should converge the projection.
+
+**Operating model after Conv-16a:**
+- Bid workflow state is now durably queryable via SQL without round-tripping through Temporal — `GET /bids/:id/state` is the cheap read path; Temporal queries stay for audit + history.
+- Cost transparency now rolls up per-bid: `bid_state_projection.total_llm_cost_usd` sums `llm_cost_delta` across S5/S6/S7/S11 (the 4 phases that already carry `llm_cost_usd` on their artifacts). S3/S4 still emit cost-less transitions; future-conv adds cost to BA/SA/Domain agent DTOs if/when it's needed.
+- Two sinks per transition (PUBLISH + XADD) are independent; one-side outage doesn't break the other (publish fails → xadd still durable; xadd fails → pub/sub still drives WebSocket).
 
 ### Conv 15 — S11 retrospective real LLM + Obsidian KB write-back + S4 semantic compare (2026-04-26)
 **Trigger:** path-to-pilot. Conv 14 closed S5/S6/S7 real-LLM; Conv 15 closes the learning loop (retrospective produces actionable KB deltas that land in the vault) and tightens cross-stream conflict detection (regex → LLM-augmented semantic compare).
