@@ -393,3 +393,157 @@ export interface AuthUser {
   email?: string;
   roles: string[];
 }
+
+// ---------------------------------------------------------------------------
+// S0.5 Wave 3 — parse session schemas. Mirrors the NestJS DTOs in
+// `src/api-gateway/src/parse-sessions/dto/{preview-response,confirm-request,
+// upload-files}.dto.ts`. These shapes round-trip through MinIO + Postgres
+// before reaching the UI; we re-validate at the network boundary so a stale
+// or partially-failed parse session can't crash the panel.
+// ---------------------------------------------------------------------------
+
+export const ParseSessionStatusEnum = z.enum([
+  'PARSING',
+  'READY',
+  'CONFIRMED',
+  'ABANDONED',
+  'FAILED',
+]);
+export type ParseSessionStatus = z.infer<typeof ParseSessionStatusEnum>;
+
+export const BidProfileEnum = z.enum(['S', 'M', 'L', 'XL']);
+export type BidProfileLevel = z.infer<typeof BidProfileEnum>;
+
+export const LanguageEnum = z.enum(['en', 'vi']);
+export type Language = z.infer<typeof LanguageEnum>;
+
+export const AtomPreviewItemSchema = z.object({
+  id: z.string(),
+  type: z.enum([
+    'functional',
+    'nfr',
+    'technical',
+    'compliance',
+    'timeline',
+    'unclear',
+  ]),
+  priority: z.enum(['MUST', 'SHOULD', 'COULD', 'WONT']),
+  category: z.string(),
+  source_file: z.string(),
+  body_md: z.string(),
+  confidence: z.number(),
+  split_recommended: z.boolean().optional(),
+});
+export type AtomPreviewItem = z.infer<typeof AtomPreviewItemSchema>;
+
+export const SourcePreviewItemSchema = z.object({
+  file_id: z.string(),
+  original_name: z.string(),
+  mime: z.string(),
+  page_count: z.number().nullable().optional(),
+  role: z.string(),
+  language: z.string(),
+  parsed_to: z.string(),
+  atoms_extracted: z.number(),
+});
+export type SourcePreviewItem = z.infer<typeof SourcePreviewItemSchema>;
+
+export const ConflictItemSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  atom_ids: z.array(z.string()),
+  severity: z.enum(['low', 'medium', 'high']).optional(),
+});
+export type ConflictItem = z.infer<typeof ConflictItemSchema>;
+
+export const SuggestedBidCardSchema = z.object({
+  name: z.string(),
+  client_name: z.string(),
+  industry: z.string(),
+  region: z.string(),
+  deadline: z.string(),
+  scope_summary: z.string(),
+  estimated_profile: BidProfileEnum,
+  language: LanguageEnum,
+  technology_keywords: z.array(z.string()),
+});
+export type SuggestedBidCard = z.infer<typeof SuggestedBidCardSchema>;
+
+export const ContextPreviewSchema = z.object({
+  anchor_md: z.string(),
+  summary_md: z.string(),
+  open_questions: z.array(z.string()),
+});
+export type ContextPreview = z.infer<typeof ContextPreviewSchema>;
+
+export const AtomsPreviewSchema = z.object({
+  total: z.number(),
+  by_type: z.record(z.string(), z.number()),
+  by_priority: z.record(z.string(), z.number()),
+  low_confidence_count: z.number(),
+  sample: z.array(AtomPreviewItemSchema),
+});
+export type AtomsPreview = z.infer<typeof AtomsPreviewSchema>;
+
+export const SuggestedWorkflowSchema = z.object({
+  profile: BidProfileEnum,
+  pipeline: z.array(z.string()),
+  estimated_total_token_cost_usd: z.number(),
+  estimated_duration_hours: z.number(),
+  review_gate: z.object({
+    reviewer_count: z.number(),
+    timeout_hours: z.number(),
+    max_rounds: z.number(),
+  }),
+});
+export type SuggestedWorkflow = z.infer<typeof SuggestedWorkflowSchema>;
+
+export const PreviewResponseSchema = z.object({
+  session_id: z.string(),
+  status: ParseSessionStatusEnum,
+  progress: z
+    .object({ stage: z.string(), percent: z.number() })
+    .optional(),
+  parse_error: z.string().optional(),
+  suggested_bid_card: SuggestedBidCardSchema.nullable(),
+  context_preview: ContextPreviewSchema,
+  atoms_preview: AtomsPreviewSchema,
+  sources_preview: z.array(SourcePreviewItemSchema),
+  conflicts_detected: z.array(ConflictItemSchema),
+  suggested_workflow: SuggestedWorkflowSchema.nullable(),
+  current_state: z.enum(['AWAITING_CONFIRM', 'CONFIRMED', 'ABANDONED']),
+  expires_at: z.string(),
+});
+export type PreviewResponse = z.infer<typeof PreviewResponseSchema>;
+
+/**
+ * Frontmatter patch sent on confirm. The backend re-validates against the
+ * canonical Pydantic `AtomFrontmatter` (the `patch` field is loose on
+ * purpose so we can ship priority/category/tags/text edits without a
+ * schema bump on every UX iteration).
+ */
+export const AtomEditSchema = z.object({
+  id: z.string().min(1).max(64),
+  patch: z.record(z.string(), z.unknown()),
+});
+export type AtomEdit = z.infer<typeof AtomEditSchema>;
+
+export const ConfirmRequestSchema = z.object({
+  client_name: z.string().min(1).max(200).optional(),
+  industry: z.string().min(1).max(100).optional(),
+  region: z.string().min(1).max(100).optional(),
+  deadline: z.string().optional(),
+  profile_override: BidProfileEnum.optional(),
+  name: z.string().min(1).max(200).optional(),
+  atom_edits: z.array(AtomEditSchema).max(2_000).optional(),
+  atom_rejects: z.array(z.string()).max(2_000).optional(),
+});
+export type ConfirmRequest = z.infer<typeof ConfirmRequestSchema>;
+
+export const ConfirmResponseSchema = z.object({
+  bid_id: z.string(),
+  workflow_id: z.string(),
+  vault_path: z.string(),
+  trace_id: z.string().optional(),
+});
+export type ConfirmResponse = z.infer<typeof ConfirmResponseSchema>;
