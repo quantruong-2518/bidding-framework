@@ -442,6 +442,88 @@ def render_index(state: BidState) -> str:
     return _wrap(_join(parts), bid_id=state.bid_id, phase=state.current_state, artifact="index", title=f"Bid workspace — {title_client}")
 
 
+# ---------------------------------------------------------------------------
+# Wave 2A — S0.5 atom + anchor + summary + compliance matrix renderers.
+#
+# Additive only: the workspace snapshot writer never imports these (the S0.5
+# materialise activity does). Existing 15 render_* functions left untouched.
+# ---------------------------------------------------------------------------
+
+
+def render_atom_body(atom: "AtomFrontmatter", body_md: str) -> str:  # type: ignore[name-defined]
+    """Re-export of :func:`kb_writer.atom_emitter.render_atom_body` so callers
+    that already import :mod:`kb_writer.templates` for the legacy renderers
+    don't need a second import."""
+    from kb_writer.atom_emitter import render_atom_body as _impl
+
+    return _impl(atom, body_md)
+
+
+def render_anchor(anchor_md: str, *, bid_id: str, tenant_id: str) -> str:
+    """Wrap a synth anchor body with frontmatter + H1 so the vault file is
+    self-describing for ingestion."""
+    body = (anchor_md or "").rstrip() + "\n"
+    return _join(
+        [
+            "---",
+            f"bid_id: {bid_id}",
+            f"tenant_id: {tenant_id}",
+            "kind: project_anchor",
+            "role: derived",
+            f"generated_at: {_now_iso()}",
+            "---",
+            "",
+            body,
+        ]
+    )
+
+
+def render_summary(summary_md: str, *, bid_id: str, tenant_id: str) -> str:
+    """Wrap a synth summary body with frontmatter + H1."""
+    body = (summary_md or "").rstrip() + "\n"
+    return _join(
+        [
+            "---",
+            f"bid_id: {bid_id}",
+            f"tenant_id: {tenant_id}",
+            "kind: project_summary",
+            "role: derived",
+            f"generated_at: {_now_iso()}",
+            "---",
+            "",
+            body,
+        ]
+    )
+
+
+def render_compliance_matrix(atoms: list["AtomFrontmatter"]) -> str:  # type: ignore[name-defined]
+    """Render a compact compliance matrix from the active atoms.
+
+    Filters to ``active=True`` + type ``compliance``; one row per atom with
+    priority + category. Returns a markdown body (no frontmatter — caller
+    wraps when writing to vault).
+    """
+    rows: list[list[str]] = []
+    for atom in atoms or []:
+        try:
+            if not atom.active or atom.type != "compliance":
+                continue
+        except AttributeError:
+            continue
+        rows.append([atom.id, atom.priority, atom.category, atom.tenant_id])
+    body_table = _table(["Atom ID", "Priority", "Category", "Tenant"], rows)
+    return _join(
+        [
+            "# Compliance matrix",
+            "",
+            f"_{len(rows)} active compliance atom(s)._",
+            "",
+            body_table,
+            "",
+        ]
+    )
+
+
 __all__ = [
     "render_ba",
     "render_bid_card",
@@ -458,4 +540,9 @@ __all__ = [
     "render_submission",
     "render_triage",
     "render_wbs",
+    # Wave 2A additions:
+    "render_atom_body",
+    "render_anchor",
+    "render_summary",
+    "render_compliance_matrix",
 ]
