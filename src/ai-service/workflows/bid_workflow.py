@@ -730,11 +730,23 @@ class BidWorkflow:
     async def _run_s11_retrospective(self) -> None:
         assert self._submission and self._bid_card
         self._state = "S11"
+        # Conv 15: feed every populated phase artifact into the retrospective so
+        # the LLM has cross-stream context. Optional fields stay None on
+        # profiles that skip a phase (e.g. Bid-S without S5/S7).
         self._retrospective = await workflow.execute_activity(
             retrospective_activity,
             RetrospectiveInput(
                 bid_id=self._bid_card.bid_id,
                 submission=self._submission,
+                ba_draft=self._ba_draft,
+                sa_draft=self._sa_draft,
+                domain_notes=self._domain_notes,
+                convergence=self._convergence,
+                wbs=self._wbs,
+                pricing=self._pricing,
+                reviews=list(self._reviews),
+                client_name=self._bid_card.client_name,
+                industry=self._bid_card.industry,
             ),
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=_DEFAULT_RETRY,
