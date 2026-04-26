@@ -1,4 +1,16 @@
-"""Document indexing: chunk -> embed (dense+sparse) -> upsert to Qdrant."""
+"""Document indexing: chunk -> embed (dense+sparse) -> upsert to Qdrant.
+
+S0.5 Wave 2C extension:
+* :func:`index_documents` accepts a ``collection`` argument
+  (``"staging" | "prod" | "auto" | <legacy>``). Default ``"auto"`` inspects each
+  document's payload role + approved/active flags to route between
+  ``bid-atoms-staging`` and ``bid-atoms-prod`` (per design doc §3.5). Legacy
+  callers that pass nothing still hit ``QdrantSettings.collection_name`` so
+  the pre-S0.5 ``bid_knowledge`` collection stays usable.
+* UPSERT semantics already idempotent via ``UUID5`` chunk IDs; flipping
+  ``approved=true`` re-indexes the same atom into the prod collection without
+  creating duplicates.
+"""
 
 from __future__ import annotations
 
@@ -6,15 +18,19 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from config.qdrant import (
     DENSE_VECTOR_NAME,
+    PROD_COLLECTION,
     SPARSE_VECTOR_NAME,
+    STAGING_COLLECTION,
     get_qdrant_settings,
 )
 from rag.embeddings import get_dense_embedder, get_sparse_embedder
+from rag.payload_schema import routes_to_prod, validate_payload
 from rag.tenant import SHARED_TENANT
 
 logger = logging.getLogger(__name__)
@@ -23,6 +39,10 @@ _CHARS_PER_TOKEN = 4  # rough heuristic; avoids pulling a tokenizer for chunking
 _DEFAULT_MAX_TOKENS = 512
 _DEFAULT_OVERLAP_TOKENS = 64
 _UPSERT_BATCH = 64
+
+# Resolution literal for index_documents.collection. ``"legacy"`` keeps the
+# pre-S0.5 single-collection path (writes into QdrantSettings.collection_name).
+CollectionMode = Literal["staging", "prod", "auto", "legacy"]
 
 
 class DocumentMetadata(BaseModel):
@@ -108,14 +128,50 @@ async def _flush_batch(  # type: ignore[no-untyped-def]
     await client.upsert(collection_name=collection, points=points, wait=True)
 
 
+def _resolve_collection(payload: dict[str, Any], mode: CollectionMode) -> str:
+    """Decide the Qdrant collection name for a single chunk's payload.
+
+    Modes:
+    * ``staging`` / ``prod`` — explicit override (used by the materialize
+      activity when promoting an approved atom).
+    * ``auto`` (default for ingestion) — validate via payload_schema; route
+      atoms with ``approved AND active`` to PROD, everything else to STAGING.
+    * ``legacy`` — fall back to the pre-S0.5 single collection.
+    """
+    if mode == "staging":
+        return STAGING_COLLECTION
+    if mode == "prod":
+        return PROD_COLLECTION
+    if mode == "legacy":
+        return get_qdrant_settings().collection_name
+    role = payload.get("role")
+    if not isinstance(role, str):
+        # Default-fallback: legacy chunks (no role) go to staging — never prod.
+        return STAGING_COLLECTION
+    validated = validate_payload(payload, role)
+    if validated is None:
+        # Validation failure is logged inside validate_payload; play safe.
+        return STAGING_COLLECTION
+    return PROD_COLLECTION if routes_to_prod(validated) else STAGING_COLLECTION
+
+
 async def index_documents(  # type: ignore[no-untyped-def]
     client,
     docs: list[Document],
+    *,
+    collection: CollectionMode = "legacy",
 ) -> int:
-    """Chunk, embed, and upsert a batch of documents. Returns chunks indexed."""
+    """Chunk, embed, and upsert a batch of documents. Returns chunks indexed.
+
+    The ``collection`` arg controls routing:
+    - ``"legacy"`` (default for backward compat) — writes to the pre-S0.5
+      ``QdrantSettings.collection_name`` (``bid_knowledge``).
+    - ``"auto"`` — per-document role-based routing into staging vs prod
+      (S0.5 Wave 2C behaviour).
+    - ``"staging"`` / ``"prod"`` — explicit override.
+    """
     from qdrant_client.http import models as qm
 
-    settings = get_qdrant_settings()
     dense = get_dense_embedder()
     sparse = get_sparse_embedder()
 
@@ -130,12 +186,13 @@ async def index_documents(  # type: ignore[no-untyped-def]
     dense_vecs = await dense.embed_batch(texts)
     sparse_vecs = await sparse.embed_batch(texts)
 
-    pending: list = []
+    # Bucket points by destination collection so we issue one upsert per target.
+    pending: dict[str, list] = {}
     total = 0
     for (doc, chunk_idx, chunk_text), dvec, svec in zip(
         all_chunks, dense_vecs, sparse_vecs, strict=True
     ):
-        payload = {
+        payload: dict[str, Any] = {
             "content": chunk_text,
             "parent_doc_id": doc.id,
             "chunk_index": chunk_idx,
@@ -146,6 +203,8 @@ async def index_documents(  # type: ignore[no-untyped-def]
         # leakage is impossible at filter time. Default to SHARED_TENANT
         # for cross-tenant content (lessons/, technologies/, …).
         payload.setdefault("tenant_id", SHARED_TENANT)
+
+        target = _resolve_collection(payload, collection)
         point = qm.PointStruct(
             id=_chunk_point_id(doc.id, chunk_idx),
             vector={
@@ -154,16 +213,23 @@ async def index_documents(  # type: ignore[no-untyped-def]
             },
             payload=payload,
         )
-        pending.append(point)
-        if len(pending) >= _UPSERT_BATCH:
-            await _flush_batch(client, settings.collection_name, pending)
-            total += len(pending)
-            pending = []
-    if pending:
-        await _flush_batch(client, settings.collection_name, pending)
-        total += len(pending)
+        bucket = pending.setdefault(target, [])
+        bucket.append(point)
+        if len(bucket) >= _UPSERT_BATCH:
+            await _flush_batch(client, target, bucket)
+            total += len(bucket)
+            pending[target] = []
+    for target, bucket in pending.items():
+        if bucket:
+            await _flush_batch(client, target, bucket)
+            total += len(bucket)
 
-    logger.info("rag.index_documents chunks=%d docs=%d", total, len(docs))
+    logger.info(
+        "rag.index_documents chunks=%d docs=%d collection=%s",
+        total,
+        len(docs),
+        collection,
+    )
     return total
 
 
@@ -198,12 +264,28 @@ async def index_markdown_file(  # type: ignore[no-untyped-def]
     client,
     path: str,
     metadata_overrides: dict | None = None,
+    *,
+    collection: CollectionMode | None = None,
 ) -> int:
-    """Read a single markdown file (with optional frontmatter) and index it."""
+    """Read a single markdown file (with optional frontmatter) and index it.
+
+    The ``collection`` arg flows through to :func:`index_documents`. Two
+    backward-compatible call patterns are supported:
+    1. ``index_markdown_file(client, path, overrides, collection="auto")`` —
+       direct kwarg (callers that ``await`` this function explicitly).
+    2. ``overrides["__collection__"]`` — when the caller is the
+       :class:`IngestionService` indexer adapter, which can't pass extra
+       kwargs to a user-supplied callable (Conv-13 stub-injection idiom).
+    Default ``None`` resolves to ``"legacy"`` so existing direct callers
+    (seeders, RAG smoke tests) keep landing in the pre-S0.5 single
+    collection.
+    """
     p = Path(path)
     raw = p.read_text(encoding="utf-8")
     fm, body = _parse_frontmatter(raw)
-    overrides = metadata_overrides or {}
+    overrides = dict(metadata_overrides or {})
+    if collection is None:
+        collection = overrides.pop("__collection__", "legacy")
 
     metadata = DocumentMetadata(
         tenant_id=overrides.get("tenant_id") or fm.get("tenant_id"),
@@ -214,6 +296,40 @@ async def index_markdown_file(  # type: ignore[no-untyped-def]
         doc_type=overrides.get("doc_type") or fm.get("doc_type"),
         source_path=overrides.get("source_path") or str(p),
     )
+    # Allow the ingestion service to flow extra payload fields (role, atom_id,
+    # approved, active, …) without altering the DocumentMetadata schema.
+    extra_keys = {
+        "role",
+        "atom_id",
+        "atom_type",
+        "priority",
+        "approved",
+        "active",
+        "kind",
+        "outcome",
+        "kb_delta_id",
+        "bid_id",
+        "file_id",
+        "section",
+        "page",
+        "language",
+        "tags",
+        "category",
+        "source_file",
+    }
+    for key in extra_keys:
+        if key in overrides and overrides[key] is not None:
+            metadata.extra[key] = overrides[key]  # type: ignore[assignment]
     doc_id = overrides.get("id") or fm.get("project_id") or p.stem
     doc = Document(id=doc_id, content=body, metadata=metadata)
-    return await index_documents(client, [doc])
+    return await index_documents(client, [doc], collection=collection)
+
+
+__all__ = [
+    "CollectionMode",
+    "Document",
+    "DocumentMetadata",
+    "chunk_markdown",
+    "index_documents",
+    "index_markdown_file",
+]
