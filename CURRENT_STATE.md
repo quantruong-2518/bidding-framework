@@ -3,20 +3,19 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-26 (Phase 3.4 Phase-A multi-tenant KB isolation — Conv-13, code-only, host-verified slug + filter helpers)
+## Last Updated: 2026-04-26 (Conv 14 — S5/S6/S7 real LLM via LLMConversation 4-tier; 5 commits; host-verified through FakeLLMClient)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A (code) COMPLETE — code-only path remains for Conv 14 (S5/S6/S7 real LLM); 7 feature gaps + 2 infra gaps + 4 carry-forwards. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 (code) COMPLETE — proposal output is sale-ready when an LLM key is set. Remaining: Conv 15 (S11 retro + Obsidian sync) and Conv 16 (live smoke + Docker E2E). 4 feature gaps + 2 infra gaps + 4 carry-forwards. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
 
 ## >>> NEXT ACTION <<<
 
-**Recommendation: Conv 14 — S5 / S6 / S7 real LLM via `LLMConversation` 4-tier.**
-- Replaces the deterministic stubs at `activities/{solution_design,wbs,commercial}.py` so the proposal output becomes sale-ready.
-- Use flagship for HLD synthesis (S5), small for WBS templating (S6), nano for pricing math (S7).
-- Code-only for unit tests; LLM smoke needs a provider key (any of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `BEDROCK_*` / `GEMINI_API_KEY`).
-- Estimated ~1500 LOC + ~$0.05/bid LLM at smoke time.
+**Recommendation: Conv 15 — S11 Retrospective real LLM + Obsidian bi-directional sync + S4 semantic compare.**
+- Closes the learning loop: bid outcome capture → Sonnet KB deltas → human-in-loop approval → Obsidian write-back.
+- Adds S4 semantic conflict detection (currently regex/keyword) — small LOC tactical add.
+- Code-only for unit tests; LLM smoke needs a provider key.
+- Estimated ~700 LOC + ~$0.05/bid LLM at smoke time. Detailed plan in `memory/project_phase_3_4_detailed_plan.md` Phases B–F.
 
-Path-to-pilot (3 conversations remaining):
-- **Conv 14** (now): S5/S6/S7 real LLM (proposal sale-readiness).
+Path-to-pilot (2 conversations remaining):
 - **Conv 15**: S11 retrospective real LLM + Obsidian write-back + S4 semantic compare. ~$0.05/bid.
 - **Conv 16**: live smoke (Anthropic side) + Docker E2E + `.env.example` rebuild. Needs `ANTHROPIC_API_KEY` + Docker + permission lift.
 
@@ -24,6 +23,35 @@ Detour gates (jump if resource arrives):
 - ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
 - ✅ K8s cluster arrives → **Conv 18** (Phase 3.6 Helm + HPA + cert-manager).
 - ✅ Cluster + k6 runner → **Conv 19** (Phase 3.7-K8s load suite).
+
+### Conv 14 — S5 / S6 / S7 real LLM via LLMConversation 4-tier (2026-04-26)
+**Trigger:** path-to-pilot. After Conv 13 closed the multi-tenant gate, the next sale-readiness lever was replacing the deterministic stubs at `activities/{solution_design,wbs,commercial}.py` so the proposal output reflects each RFP rather than a fixed template.
+
+**Locked design choices:**
+- **No KB calls** in S5/S6/S7 v1. The S3 streams already carry `similar_projects` / patterns into the convergence input, so adding fresh `kb_search` calls would mean widening 3 input DTOs with `tenant_id` for marginal recall gain. Skipped.
+- **Tier per state:** S5 = `flagship` (synthesise) + `small` (critique) — 2-turn `LLMConversation`. S6 = `small` single turn. S7 = `nano` single turn.
+- **Arithmetic stays wrapper-side.** LLM produces narrative + line items (S7) / WBS items (S6) / components (S5); the wrapper sums + applies margin / pod-week heuristic / dependency validation. LLMs are unreliable at multi-step math.
+- **Stub fallback preserved** as the contract: `is_llm_available() is False` → stub; agent raises (parse / empty output / etc.) → stub. Both branches return well-formed artifacts so S6/S8 never see `None`.
+
+**Commits (5 total):**
+1. **`feat(workflows): add optional llm_cost_usd + llm_tier_used to artifacts`** (`2c22a74`) — `HLDDraft` / `WBSDraft` / `PricingDraft` each gain two optional fields populated by the real-LLM path; `None` means "stub produced this artifact". Lets the audit dashboard attribute cost without round-tripping through Langfuse.
+2. **`feat(ai-service): S7 commercial real LLM via nano tier`** (`af730e1`) — `agents/commercial_agent.py` (`run_commercial_agent`, single nano turn) + `agents/prompts/commercial_agent.py` (`SYSTEM_PROMPT_PRICING` 1.0.0) + rewritten `activities/commercial.py` (gated wrapper, stub preserved as `_commercial_stub`). LLM emits `{model, currency, lines, margin_pct, notes}`; wrapper computes subtotal/total/scenarios. 7 specs in `tests/test_commercial_agent.py`.
+3. **`feat(ai-service): S6 WBS real LLM via small tier`** (`3ee026f`) — `agents/wbs_agent.py` (`run_wbs_agent`) + `agents/prompts/wbs_agent.py` (`SYSTEM_PROMPT_WBS` 1.0.0) + rewritten `activities/wbs.py`. LLM tailors items + critical_path to BA/HLD; wrapper recomputes `total_effort_md` (sum) and `timeline_weeks` (20 MD = 1 pod-week, min 4) and strips dangling `depends_on`/`critical_path` ids. `_REFERENCE_TEMPLATE` preserved as both LLM seed + stub baseline. 6 specs in `tests/test_wbs_agent.py`.
+4. **`feat(ai-service): S5 solution design real LLM via flagship+small critique`** (`40f4ef6`) — `agents/solution_design_agent.py` (`run_solution_design_agent`, two-turn `LLMConversation`) + `agents/prompts/solution_design_agent.py` (`SYSTEM_PROMPT_HLD` + `SYSTEM_PROMPT_HLD_CRITIQUE` 1.0.0) + rewritten `activities/solution_design.py`. Critique turn uses an instruction-switch user message because `LLMConversation` locks `system` at construction. `_merge_critique` patches the draft with critique findings the wrapper can apply deterministically (security gaps appended; weak data flows surfaced as `⚠ critique-flagged` notes; SA integrations the LLM dropped get carried back); critique parse failure is non-fatal (proceeds with unmodified draft). 7 specs in `tests/test_solution_design_agent.py`.
+
+**Host-verified invariants (no Docker, no temporalio):**
+- S7: arithmetic finalisation, nano tier + trace_id wiring, fenced-JSON tolerance, empty-lines raise, garbage raise, unknown-model → fixed_price coercion, industry-neutral margin pass-through.
+- S6: total + timeline recompute (162 MD → 8 weeks), dangling-dep strip (`WBS-NONEXISTENT` removed), critical_path id filter (`WBS-GHOST` removed), 4-week floor on tiny inputs, small tier + trace_id wiring, empty raise.
+- S5: two-turn tier wiring (flagship + small), trace_id propagated to both turns, cost rolls up across turns, dropped SA integration (`Notification bus`) carried back, dangling component dep stripped, critique findings merged into `security_approach` + `data_flows`, critique parse failure tolerated, empty-components raise.
+
+**Total host-verified: 22 inline assertions PASS.**
+
+**Deferred verification (carry-forward — Conv 16):** the new pytest specs (`test_commercial_agent.py` 7 + `test_wbs_agent.py` 6 + `test_solution_design_agent.py` 7 = 20 specs) need Docker because conftest pulls in `temporalio` via `activities.notify`. Same constraint as every prior phase. The earlier ~120 LLM-layer specs are unaffected (run via `--noconftest`).
+
+**Operating model after Conv 14:**
+- 9 of 11 states use real LLM with stub fallback. Remaining stubs: S10 (vendor-portal submission, blocked on customer-specific API), S11 (retrospective, Conv 15 next).
+- `proposal sale-ready` status now depends only on a provider key. Without a key → workflow runs end-to-end via stubs (existing Phase 2.1 behaviour); with a key → S5/S6/S7 emit per-RFP narrative + LLM-attributed cost on each artifact.
+- Per-state cost roll-up is on the artifacts themselves (`HLDDraft.llm_cost_usd` etc.) — independent of Langfuse, so the audit dashboard can sum without external calls.
 
 ### Phase 3.4 Phase-A multi-tenant KB isolation — Conv-13 (2026-04-26)
 **Trigger:** path-to-pilot needed the cross-tenant leak risk closed before any pilot >1 customer can run. Per `project_phase_3_4_detailed_plan.md` Phase A, this commit ships only the multi-tenant filter (item #5); the S11 retrospective + Obsidian sync stay deferred to Conv 15.
