@@ -5,7 +5,9 @@ import { AuditLog } from '../audit/audit-log.entity';
 import { BidStateProjection } from '../bid-state-projection/bid-state-projection.entity';
 import { BidStateTransition } from '../bid-state-projection/bid-state-transition.entity';
 import { Bid } from '../bids/bid.entity';
+import { ParseSession } from '../parse-sessions/parse-session.entity';
 import { CreateBidStateProjection1714000000002 } from './migrations/1714000000002-create-bid-state-projection';
+import { CreateParseSessions1714000000003 } from './migrations/1714000000003-create-parse-sessions';
 import { InitBidsAndAuditLog1714000000001 } from './migrations/1714000000001-init-bids-and-audit-log';
 
 export const DATABASE_ENTITIES = [
@@ -13,10 +15,12 @@ export const DATABASE_ENTITIES = [
   AuditLog,
   BidStateTransition,
   BidStateProjection,
+  ParseSession,
 ];
 export const DATABASE_MIGRATIONS = [
   InitBidsAndAuditLog1714000000001,
   CreateBidStateProjection1714000000002,
+  CreateParseSessions1714000000003,
 ];
 
 /**

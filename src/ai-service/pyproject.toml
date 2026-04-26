@@ -32,6 +32,7 @@ python-frontmatter = "^1.1.0"  # task 2.7 — markdown frontmatter round-trip fo
 langfuse = "^2.59.0"  # phase 3.5 — LLM observability (self-hosted; no-op fallback when LANGFUSE_SECRET_KEY unset)
 jinja2 = "^3.1.0"  # phase 3.1 — proposal section templates
 tenacity = "^9.0.0"  # phase 3.7 — async retry decorator for LLM transient errors
+minio = "^7.2"  # S0.5 Wave 1 — S3-compatible client for object_store wrapper (parse-session originals)
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

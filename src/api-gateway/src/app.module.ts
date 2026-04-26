@@ -12,6 +12,7 @@ import { BidStateProjectionModule } from './bid-state-projection/bid-state-proje
 import { BidsModule } from './bids/bids.module';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './gateway/events.module';
+import { ObjectStoreModule } from './object-store/object-store.module';
 import { ParsersModule } from './parsers/parsers.module';
 import { RedisModule } from './redis/redis.module';
 import { WorkflowsModule } from './workflows/workflows.module';
@@ -33,6 +34,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     ParsersModule,
     EventsModule,
     AuditDashboardModule,
+    ObjectStoreModule,
   ],
   controllers: [AppController],
   providers: [
