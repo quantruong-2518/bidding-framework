@@ -17,10 +17,23 @@ from activities.state_transition import (
 class _FakeRedis:
     def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
+        self.streamed: list[tuple[str, dict[str, str]]] = []
 
     async def publish(self, channel: str, message: str) -> int:
         self.published.append((channel, message))
         return 1
+
+    async def xadd(
+        self,
+        stream: str,
+        fields: dict[str, str],
+        *,
+        maxlen: int | None = None,
+        approximate: bool | None = None,
+    ) -> str:
+        del maxlen, approximate
+        self.streamed.append((stream, dict(fields)))
+        return "1-0"
 
     async def aclose(self) -> None:
         pass
@@ -28,6 +41,9 @@ class _FakeRedis:
 
 class _BrokenRedis:
     async def publish(self, *_args: Any, **_kwargs: Any) -> int:
+        raise RuntimeError("redis outage")
+
+    async def xadd(self, *_args: Any, **_kwargs: Any) -> str:
         raise RuntimeError("redis outage")
 
     async def aclose(self) -> None:

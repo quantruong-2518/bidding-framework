@@ -210,6 +210,14 @@ class BidWorkflow:
 
     def __init__(self) -> None:
         self._state: WorkflowState = "S0"
+        # Conv-16a: monotonic per-workflow counter feeding `transition_seq` on
+        # every emitted state-transition event. Increments before XADD so the
+        # NestJS consumer can detect gaps. Replay-safe — Temporal replays the
+        # workflow body deterministically, so the counter regenerates the same
+        # values on every replay.
+        self._transition_seq: int = 0
+        self._prev_state: str | None = None
+        self._tenant_id: str | None = None
         self._bid_card: BidCard | None = None
         self._triage: TriageDecision | None = None
         self._scoping: ScopingResult | None = None
@@ -275,6 +283,15 @@ class BidWorkflow:
     @workflow.run
     async def run(self, wf_input: BidWorkflowInput) -> BidState:
         await self._run_s0(wf_input)
+        # Conv-16a: tenant_id is materialised as soon as the bid card is known
+        # (S0 done), so every transition event after S0 carries it. Mirrors
+        # the derivation used by `_run_s3_streams` for KB isolation.
+        if self._bid_card is not None:
+            self._tenant_id = (
+                self._bid_card.tenant_id
+                or slugify(self._bid_card.client_name)
+                or SHARED_TENANT
+            )
         await self._complete_phase("S0_DONE")
         await self._run_s1_triage()
         await self._complete_phase("S1_DONE")
@@ -295,7 +312,9 @@ class BidWorkflow:
             state = pipeline[idx]
             handler = getattr(self, _STATE_DISPATCH_MAP[state])
             await handler()
-            await self._complete_phase(f"{state}_DONE")
+            await self._complete_phase(
+                f"{state}_DONE", llm_cost_delta=self._cost_for(state)
+            )
 
             # Phase 2.4 loop-back: _run_s9_review may set self._state to an
             # earlier pipeline state. Detect + rewind. Phase 2.6 never triggers
@@ -754,6 +773,23 @@ class BidWorkflow:
 
     # --- helpers ------------------------------------------------------------
 
+    def _cost_for(self, state: str) -> float | None:
+        """Return the LLM cost emitted by this phase, if any.
+
+        Conv-14 added ``llm_cost_usd`` to HLD/WBS/Pricing artifacts; Conv-15
+        added it to RetrospectiveDraft. S3 streams produce 3 separate
+        drafts but the agent DTOs don't carry cost yet — sum stays None.
+        """
+        if state == "S5" and self._hld is not None:
+            return self._hld.llm_cost_usd
+        if state == "S6" and self._wbs is not None:
+            return self._wbs.llm_cost_usd
+        if state == "S7" and self._pricing is not None:
+            return self._pricing.llm_cost_usd
+        if state == "S11" and self._retrospective is not None:
+            return self._retrospective.llm_cost_usd
+        return None
+
     async def _snapshot_workspace(self, phase: str) -> None:
         """Best-effort per-phase vault write. Failures are logged, never fatal."""
         if self._bid_card is None:
@@ -775,21 +811,36 @@ class BidWorkflow:
             )
 
     async def _notify_state_transition(
-        self, phase: str, artifact_keys: tuple[str, ...]
+        self,
+        phase: str,
+        artifact_keys: tuple[str, ...],
+        llm_cost_delta: float | None = None,
     ) -> None:
-        """Phase 2.5 best-effort broadcast that a phase just completed."""
+        """Phase 2.5 best-effort broadcast that a phase just completed.
+
+        Conv-16a: also XADDs to ``bid.transitions`` for the CQRS read model.
+        ``transition_seq`` is monotonic per workflow run; XADD failure is
+        swallowed inside the activity, never raised to the workflow.
+        """
         if self._bid_card is None:
             return
         profile: BidProfile = self._profile or self._bid_card.estimated_profile  # type: ignore[assignment]
+        self._transition_seq += 1
+        from_state = self._prev_state
         try:
             await workflow.execute_activity(
                 state_transition_activity,
                 NotifyStateTransitionInput(
                     bid_id=str(self._bid_card.bid_id),
+                    workflow_id=workflow.info().workflow_id,
+                    transition_seq=self._transition_seq,
+                    tenant_id=self._tenant_id or "",
+                    from_state=from_state,
                     state=phase,
                     profile=profile,
                     artifact_keys=list(artifact_keys),
                     occurred_at=workflow.now(),
+                    llm_cost_delta=llm_cost_delta,
                 ),
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=RetryPolicy(maximum_attempts=1),
@@ -798,17 +849,27 @@ class BidWorkflow:
             workflow.logger.warning(
                 "state_transition.notify.failed phase=%s err=%s", phase, exc
             )
+        self._prev_state = phase
 
-    async def _complete_phase(self, phase: str) -> None:
+    async def _complete_phase(
+        self, phase: str, llm_cost_delta: float | None = None
+    ) -> None:
         """Run vault snapshot + emit the matching state_completed event.
 
         Emits events in snapshot-then-notify order so any subscriber re-fetching
         the bid's workspace artifacts observes read-your-writes (the vault file
         is already present when the WS event arrives).
+
+        ``llm_cost_delta`` is the cost of the LLM-backed artifact written in
+        this phase (None when the phase ran on the deterministic stub path or
+        produced no artifact). Forwarded to the projection consumer for
+        per-bid cost rollup.
         """
         await self._snapshot_workspace(phase)
         await self._notify_state_transition(
-            phase, _PHASE_ARTIFACT_KEYS.get(phase, ())
+            phase,
+            _PHASE_ARTIFACT_KEYS.get(phase, ()),
+            llm_cost_delta=llm_cost_delta,
         )
 
     def _snapshot(self) -> BidState:
