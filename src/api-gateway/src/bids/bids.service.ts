@@ -1,6 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
+import type { ParseSession } from '../parse-sessions/parse-session.entity';
+import type { ConfirmRequestDto } from '../parse-sessions/dto/confirm-request.dto';
 import { RedisService } from '../redis/redis.service';
 import { Bid, BidProfile, BidStatus } from './bid.entity';
 import { CreateBidDto } from './create-bid.dto';
@@ -99,5 +101,62 @@ export class BidsService {
     if (!result.affected) {
       throw new NotFoundException(`Bid ${id} not found`);
     }
+  }
+
+  /**
+   * S0.5 Wave 2B — atomic bid creation from a confirmed parse session.
+   *
+   * Builds the entity from `session.suggestedBidCard` then layers on user
+   * overrides supplied at confirm time (client_name / industry / region /
+   * deadline / profile_override / name). Optional `em` parameter lets the
+   * caller chain inserts inside an existing TypeORM transaction — required
+   * by `MaterializeService` so a downstream failure (vault write,
+   * Temporal start) rolls back the bids row too.
+   *
+   * The post-confirm bid carries no `workflow_id` yet (Decision 9: workflow
+   * starts AFTER materialise succeeds). Callers must invoke
+   * `attachWorkflow()` once Temporal returns.
+   *
+   * Existing `create()` is untouched — manual `POST /bids` keeps working.
+   */
+  async createFromParseSession(
+    session: ParseSession,
+    overrides: ConfirmRequestDto,
+    em?: EntityManager,
+  ): Promise<Bid> {
+    const repo = em ? em.getRepository(Bid) : this.bids;
+    const card = (session.suggestedBidCard ?? {}) as Record<string, unknown>;
+    const now = new Date().toISOString();
+
+    const clientName =
+      overrides.client_name ?? (card.client_name as string | undefined) ?? '';
+    const industry =
+      overrides.industry ?? (card.industry as string | undefined) ?? '';
+    const region =
+      overrides.region ?? (card.region as string | undefined) ?? '';
+    const deadline =
+      overrides.deadline ?? (card.deadline as string | undefined) ?? now;
+    const scopeSummary =
+      (card.scope_summary as string | undefined) ?? '';
+    const technologyKeywords =
+      (card.technology_keywords as string[] | undefined) ?? [];
+    const estimatedProfile =
+      (overrides.profile_override as BidProfile | undefined) ??
+      ((card.estimated_profile as BidProfile | undefined) ?? BidProfile.M);
+
+    const entity = repo.create({
+      clientName,
+      industry,
+      region,
+      deadline,
+      scopeSummary,
+      technologyKeywords,
+      estimatedProfile,
+      status: BidStatus.DRAFT,
+      workflowId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return repo.save(entity);
   }
 }
