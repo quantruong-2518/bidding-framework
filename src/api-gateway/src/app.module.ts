@@ -8,6 +8,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
+import { BidStateProjectionModule } from './bid-state-projection/bid-state-projection.module';
 import { BidsModule } from './bids/bids.module';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './gateway/events.module';
@@ -27,6 +28,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
     AclModule,
     RedisModule,
     BidsModule,
+    BidStateProjectionModule,
     WorkflowsModule,
     ParsersModule,
     EventsModule,
