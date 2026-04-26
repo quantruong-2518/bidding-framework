@@ -3,19 +3,21 @@
 > File này dùng để track tiến độ. Mỗi conversation mới đọc file này trước.
 > Cập nhật mỗi khi hoàn thành 1 task.
 
-## Last Updated: 2026-04-26 (Conv 16a — Bid state CQRS projection: Postgres `bid_state_transitions` log + `bid_state_projection` read model + Redis-stream consumer; 211/211 Jest green; XADD host-verified; ai-service pytest deferred)
+## Last Updated: 2026-04-26 (Conv 17/18 — S0.5 Project Context Synthesis: multi-file parse + human-confirm gate before bid registration. 4-wave agent dispatch shipped 16 atomic commits — INFRA + AI-SERVICE + API-GATEWAY + RAG + FRONTEND. 247 e2e + 13 src jest + 101 host-runnable pytest + 106 vitest green. MinIO + parse_sessions table + atomic materialize + 5-level vault layout + 2 frontend routes live.)
 
-## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 + Conv-15 (code) + Conv-16a (CQRS projection) COMPLETE — proposal output is sale-ready, learning loop closed, bid state queryable via SQL projection. 10 of 11 states real-LLM (S10 vendor portal still stub, blocked on customer API). 3 feature gaps + 2 infra gaps + 4 carry-forwards remain. See `memory/project_remaining_work_plan_2026_04_26.md` for full inventory.
+## Overall Status: PHASE 3.5 + 3.1 + 3.2a + 3.2b + 3.3 + T1 + 3.7 + 3.7d + 3.4-A + Conv-14 + Conv-15 + Conv-16a + **Conv-17/18 (S0.5 parse-confirm gate)** COMPLETE — proposal output sale-ready, learning loop closed, bid state queryable via SQL projection, **multi-file ingest with human-confirm gate live**. 10 of 11 states real-LLM (S10 vendor portal still stub, blocked on customer API). Two registration paths: legacy `POST /bids` manual (preserved) + new `POST /bids/parse → preview/confirm`. 1 main carry-forward (Docker E2E + live parse smoke), 2 infra gaps remain. See `memory/project_s0_5_delivered.md` + `memory/project_remaining_work_plan_2026_04_26.md`.
 
 ## >>> NEXT ACTION <<<
 
-**Recommendation: Conv 16b — live smoke + Docker E2E + `.env.example` rebuild.**
-- Verifies the 4 carry-forwards in one go: 3.7d Anthropic-side `thinking` smoke, Conv-13 multi-tenant pytest, Conv-14 S5/S6/S7 pytest + LLM smoke, Conv-15 S11 + S4 pytest + LLM smoke + KB write-back end-to-end. Conv-16a adds: 5 new pytest specs in `test_state_transition_xadd.py` + 1 Postgres migration smoke (`migration:run` + `\d bid_state_projection` + bid end-to-end → projection row at `S11_DONE`).
-- Needs **at least one** of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / Docker daemon. The `.env.example` rebuild is permission-blocked on `src/` — defer if not lifted.
-- After Conv 16b: post-pilot path opens (Conv 17 S10 vendor portal when first customer's API is known; Conv 18 Phase 3.6 Helm when cluster procured).
+**Recommendation: Conv 19 — Docker E2E smoke + live LLM parse smoke (closes 5 of 8 S0.5 carry-forwards in one shot).**
+- Bring up `docker compose up -d --build` (rebuilds ai-service + ai-worker per project_docker_image_split.md), apply migration `1714000000003`, exercise full upload→preview→confirm→workflow→S11_DONE round-trip with a real RFP fixture.
+- Live LLM parse smoke (atom count > 0, anchor < 1500 token, cost < $0.10).
+- Also closes the joined ~17-spec Docker-only pytest backlog from Conv 13/14/15/16a + Wave 2A/2C of Conv 17/18.
+- Needs **at least one** of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` AND Docker daemon. `.env.example` rebuild still permission-blocked.
+- After Conv 19: post-pilot path opens (Conv 20 S10 vendor portal when first customer's API is known; Conv 21 Phase 3.6 Helm when cluster procured).
 
 Path-to-pilot (1 conversation remaining):
-- **Conv 16b**: live smoke + Docker E2E + `.env.example` rebuild.
+- **Conv 19**: Docker E2E smoke + live LLM parse smoke + bucket bootstrap + migration apply.
 
 Detour gates (jump if resource arrives):
 - ✅ `ANTHROPIC_API_KEY` arrives → jump to **Conv 16** to close 4 carry-forwards in one go.
