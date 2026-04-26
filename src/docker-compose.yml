@@ -218,6 +218,11 @@ services:
       dockerfile: Dockerfile
     container_name: bid-ai-service
     restart: unless-stopped
+    # Run as the host user so files written into the bind-mounted kb-vault
+    # are owned by uid:gid 1000:1000 (the dev host) instead of root, which
+    # otherwise lands as -rw------- root:root and Obsidian on the host can't
+    # read them. Override via UID/GID env vars on other hosts.
+    user: "${UID:-1000}:${GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -291,6 +296,10 @@ services:
       dockerfile: Dockerfile
     container_name: bid-ai-worker
     restart: unless-stopped
+    # Match ai-service: file writes from workflow activities (e.g.
+    # bid_workspace.write_snapshot) need to land owned by the host user, not
+    # root, so Obsidian on the host can read them.
+    user: "${UID:-1000}:${GID:-1000}"
     command: ["python", "worker.py"]
     # ai-service Dockerfile bakes an HTTP healthcheck for port 8001 — worker.py
     # does not listen. Disable the inherited probe; rely on `restart: unless-stopped`
