@@ -253,13 +253,43 @@ class Lesson(BaseModel):
     detail: str
 
 
+class KBDelta(BaseModel):
+    """Conv 15 — a single KB update suggestion the retrospective produced.
+
+    All AI-generated deltas land in the vault with ``ai_generated: true`` in
+    frontmatter so a downstream reviewer can approve / reject before the next
+    ingestion run promotes them into the real KB. ``approved=True`` is set by
+    a human-in-loop step (not yet wired — Conv 16+).
+    """
+
+    id: str
+    type: Literal["new_lesson", "update_similar_project", "deprecate_note"] = "new_lesson"
+    # Wrapper-managed: the retrospective agent's _normalise_kb_deltas always
+    # rewrites this to lessons/<bid_id>-<delta_id>.md so the LLM doesn't need
+    # to know the vault layout. Default empty so structured parsing accepts
+    # the LLM payload without target_path.
+    target_path: str = ""
+    title: str
+    content_markdown: str
+    rationale: str = ""
+    ai_generated: bool = True
+    approved: bool = False
+
+
 class RetrospectiveDraft(BaseModel):
     """S11 output — lessons + KB feedback queue."""
 
     bid_id: UUID
     outcome: Literal["WIN", "LOSS", "PENDING"] = "PENDING"
     lessons: list[Lesson] = Field(default_factory=list)
-    kb_updates: list[str] = Field(default_factory=list)  # paths or note titles to ingest
+    # Conv 15: legacy `kb_updates` (list of paths/titles) preserved for
+    # backwards compat; new `kb_deltas` carries the structured per-suggestion
+    # payload the LLM produces and the Obsidian write-back persists.
+    kb_updates: list[str] = Field(default_factory=list)
+    kb_deltas: list[KBDelta] = Field(default_factory=list)
+    # Conv 15: optional cost roll-up — None when stub fallback ran.
+    llm_cost_usd: float | None = None
+    llm_tier_used: str | None = None
 
 
 # --- Activity input shapes ---------------------------------------------------
@@ -347,8 +377,23 @@ class SubmissionInput(BaseModel):
 
 
 class RetrospectiveInput(BaseModel):
+    """Conv 15 widened — optional earlier-phase artifacts so the LLM has
+    context to reflect on. Stub path uses only ``submission`` (backwards
+    compatible); real-LLM path consumes whichever optional fields are set.
+    Field types use forward refs to dodge the workflows.models import cycle.
+    """
+
     bid_id: UUID
     submission: SubmissionRecord
+    ba_draft: BusinessRequirementsDraft | None = None
+    sa_draft: SolutionArchitectureDraft | None = None
+    domain_notes: DomainNotes | None = None
+    convergence: ConvergenceReport | None = None
+    wbs: WBSDraft | None = None
+    pricing: PricingDraft | None = None
+    reviews: list[ReviewRecord] = Field(default_factory=list)
+    client_name: str | None = None
+    industry: str | None = None
 
 
 __all__ = [
@@ -378,6 +423,7 @@ __all__ = [
     "SubmissionChannel",
     "RetrospectiveDraft",
     "Lesson",
+    "KBDelta",
     "StreamInput",
     "ConvergenceInput",
     "SolutionDesignInput",
