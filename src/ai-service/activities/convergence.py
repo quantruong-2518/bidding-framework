@@ -243,9 +243,71 @@ def build_convergence_report(payload: ConvergenceInput) -> ConvergenceReport:
 
 @activity.defn(name="convergence_activity")
 async def convergence_activity(payload: ConvergenceInput) -> ConvergenceReport:
-    """Merge BA / SA / Domain streams; apply heuristic conflict rules + readiness gate."""
+    """Merge BA / SA / Domain streams; apply heuristic conflict rules + readiness gate.
+
+    Conv 15: when an LLM provider is configured, also runs a small-tier
+    semantic-compare pass that *augments* the heuristic conflicts. The agent
+    is silent on failure so a flaky LLM provider never breaks S4.
+    """
     activity.logger.info("convergence.start bid_id=%s", payload.bid_id)
     report = build_convergence_report(payload)
+
+    # Phase 2-real / Conv 15: LLM-augmented semantic compare (additive).
+    from config.llm import is_llm_available
+
+    if is_llm_available():
+        from agents.convergence_agent import run_semantic_compare
+        from tools.langfuse_client import (
+            get_tracer,
+            span_context as langfuse_span_context,
+        )
+
+        tracer = get_tracer()
+        span = tracer.start_span(
+            trace_id=str(payload.bid_id),
+            name="convergence_semantic",
+            metadata={"attempt": activity.info().attempt, "tier": "small"},
+        )
+        try:
+            async with langfuse_span_context(span):
+                new_conflicts, cost_usd = await run_semantic_compare(
+                    payload.ba_draft,
+                    payload.sa_draft,
+                    payload.domain_notes,
+                    report.conflicts,
+                    bid_id_for_trace=str(payload.bid_id),
+                )
+        except Exception as exc:  # noqa: BLE001 — heuristic-only fallback
+            activity.logger.warning(
+                "convergence.semantic_compare_failed bid_id=%s err=%s",
+                payload.bid_id,
+                exc,
+            )
+            new_conflicts, cost_usd = [], 0.0
+        finally:
+            span.end()
+            await tracer.aclose()
+
+        if new_conflicts:
+            report = report.model_copy(
+                update={"conflicts": [*report.conflicts, *new_conflicts]}
+            )
+            # Update the open_questions tally line to reflect the merged count.
+            already_has_questions_about_conflicts = any(
+                "cross-stream conflict" in q for q in report.open_questions
+            )
+            if not already_has_questions_about_conflicts:
+                report.open_questions.append(
+                    f"{len(report.conflicts)} cross-stream conflict(s) "
+                    "require bid-manager review."
+                )
+        activity.logger.info(
+            "convergence.semantic_done bid_id=%s new=%d cost_usd=%.6f",
+            payload.bid_id,
+            len(new_conflicts),
+            cost_usd,
+        )
+
     activity.logger.info(
         "convergence.done bid_id=%s readiness=%s conflicts=%d questions=%d",
         payload.bid_id,
