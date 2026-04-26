@@ -1,4 +1,9 @@
-"""S6 WBS + Estimation activity (Phase 2.1 stub)."""
+"""S6 WBS activity — Temporal wrapper around the WBS agent.
+
+Falls back to the Phase 2.1 deterministic 7-phase template when no LLM provider
+is available or when the agent produces unparseable output. The wrapper always
+returns a well-formed :class:`WBSDraft` so downstream activities never see None.
+"""
 
 from __future__ import annotations
 
@@ -6,60 +11,90 @@ import logging
 
 from temporalio import activity
 
+from agents.wbs_agent import _REFERENCE_TEMPLATE, run_wbs_agent
+from config.llm import is_llm_available
+from tools.langfuse_client import get_tracer, span_context as langfuse_span_context
 from workflows.artifacts import WBSDraft, WBSInput, WBSItem
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PHASES: tuple[tuple[str, str, float, str], ...] = (
-    ("WBS-000", "Project initiation + governance setup", 10.0, "pm"),
-    ("WBS-100", "Discovery + requirements firm-up", 20.0, "ba"),
-    ("WBS-200", "Solution design + architecture spikes", 25.0, "sa"),
-    ("WBS-300", "Core build — MVP scope", 80.0, "pm"),
-    ("WBS-400", "Integration + data migration", 30.0, "sa"),
-    ("WBS-500", "Test (SIT + UAT)", 25.0, "qc"),
-    ("WBS-600", "Cutover + hypercare", 15.0, "pm"),
-)
 
-
-@activity.defn(name="wbs_activity")
-async def wbs_activity(payload: WBSInput) -> WBSDraft:
-    """Generate a WBS skeleton + rough effort totals."""
-    activity.logger.info("wbs.start bid_id=%s", payload.bid_id)
-
-    items: list[WBSItem] = []
-    for item_id, name, effort_md, owner in _DEFAULT_PHASES:
-        items.append(
-            WBSItem(
-                id=item_id,
-                name=name,
-                parent_id=None,
-                effort_md=effort_md,
-                owner_role=owner,
-                depends_on=[],
-            )
+def _wbs_stub(payload: WBSInput) -> WBSDraft:
+    """Phase 2.1 deterministic baseline — preserved as the fallback contract."""
+    items: list[WBSItem] = [
+        WBSItem(
+            id=row["id"],
+            name=row["name"],
+            parent_id=None,
+            effort_md=float(row["effort_md"]),
+            owner_role=row["owner_role"],
+            depends_on=[],
         )
-
-    # Bias effort when BA flags many MUST functional requirements.
-    must_count = sum(1 for fr in payload.ba_draft.functional_requirements if fr.priority == "MUST")
+        for row in _REFERENCE_TEMPLATE
+    ]
+    must_count = sum(
+        1 for fr in payload.ba_draft.functional_requirements if fr.priority == "MUST"
+    )
     for it in items:
         if it.id == "WBS-300":
             it.effort_md = round(it.effort_md + max(0, must_count - 3) * 8.0, 1)
-
     total = round(sum(it.effort_md for it in items), 1)
-    # 20 MD ≈ 1 calendar week for a 5-person pod (rough, Phase 2.1 stub).
     timeline_weeks = max(4, int(round(total / 20.0)))
-
-    draft = WBSDraft(
+    return WBSDraft(
         bid_id=payload.bid_id,
         items=items,
         total_effort_md=total,
         timeline_weeks=timeline_weeks,
-        critical_path=[it.id for it in items if it.id in {"WBS-200", "WBS-300", "WBS-500"}],
+        critical_path=[
+            it.id for it in items if it.id in {"WBS-200", "WBS-300", "WBS-500"}
+        ],
     )
+
+
+@activity.defn(name="wbs_activity")
+async def wbs_activity(payload: WBSInput) -> WBSDraft:
+    """Generate the Work Breakdown Structure + effort + timeline."""
+    if not is_llm_available():
+        activity.logger.info("wbs.fallback_to_stub bid_id=%s", payload.bid_id)
+        return _wbs_stub(payload)
+
     activity.logger.info(
-        "wbs.done bid_id=%s total_md=%.1f weeks=%d",
+        "wbs.start bid_id=%s must_count=%d hld=%s",
         payload.bid_id,
-        total,
-        timeline_weeks,
+        sum(
+            1 for fr in payload.ba_draft.functional_requirements if fr.priority == "MUST"
+        ),
+        "yes" if payload.hld is not None else "no",
+    )
+    activity.heartbeat("wbs_started")
+
+    tracer = get_tracer()
+    span = tracer.start_span(
+        trace_id=str(payload.bid_id),
+        name="wbs",
+        metadata={"attempt": activity.info().attempt, "tier": "small"},
+    )
+    try:
+        async with langfuse_span_context(span):
+            draft = await run_wbs_agent(payload)
+    except Exception as exc:  # noqa: BLE001 — any agent failure → stub fallback
+        activity.logger.warning(
+            "wbs.agent_failed_using_stub bid_id=%s err=%s",
+            payload.bid_id,
+            exc,
+        )
+        draft = _wbs_stub(payload)
+    finally:
+        span.end()
+        await tracer.aclose()
+
+    activity.heartbeat("wbs_completed")
+    activity.logger.info(
+        "wbs.done bid_id=%s items=%d total_md=%.1f weeks=%d cost_usd=%.6f",
+        payload.bid_id,
+        len(draft.items),
+        draft.total_effort_md,
+        draft.timeline_weeks,
+        draft.llm_cost_usd or 0.0,
     )
     return draft
