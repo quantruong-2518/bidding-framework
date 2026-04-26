@@ -56,8 +56,22 @@ export interface StartParseResponse {
 export interface ParseStatusResponse {
   session_id: string;
   status: 'PARSING' | 'READY' | 'FAILED';
-  progress?: { stage: string; percent: number };
+  progress?: {
+    stage: string;
+    percent?: number;
+    files_total?: number;
+    files_processed?: number;
+    atoms_so_far?: number;
+  };
   error?: string;
+  /**
+   * Live tracker payload while ``status === 'PARSING'``. Carries the running
+   * ``atoms_preview`` + ``sources_preview`` shape so api-gateway can merge it
+   * into the §3.6 PreviewResponse without round-tripping through Postgres.
+   * Populated to the full ``ContextSynthesisOutput`` once status flips to
+   * READY.
+   */
+  result?: Record<string, unknown>;
 }
 
 export interface MaterializeRequest {

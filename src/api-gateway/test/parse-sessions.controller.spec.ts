@@ -43,7 +43,7 @@ describe('ParseController', () => {
   let controller: ParseController;
   let sessionRepo: Repository<ParseSession>;
   let sessions: ParseSessionsService;
-  let aiClient: { startParse: jest.Mock };
+  let aiClient: { startParse: jest.Mock; getParseStatus: jest.Mock };
   let objectStore: { putObject: jest.Mock; deletePrefix: jest.Mock };
   let materialize: { confirmAndStart: jest.Mock };
   let moduleRef: TestingModule;
@@ -54,6 +54,11 @@ describe('ParseController', () => {
         session_id: 'will-be-overwritten',
         status: 'PARSING',
       }),
+      // Default tracker: PARSING with no result. Per-test overrides below
+      // exercise the live atoms-merge path. Tracker errors are swallowed by
+      // the controller, so a missing override falls back to the empty Postgres
+      // shape — that's the existing PARSING test's contract.
+      getParseStatus: jest.fn().mockRejectedValue(new Error('tracker miss')),
     };
     objectStore = {
       putObject: jest.fn().mockResolvedValue(undefined),
@@ -233,6 +238,95 @@ describe('ParseController', () => {
       expect(preview.atoms_preview.total).toBe(0);
       expect(preview.suggested_bid_card).toBeNull();
       expect(preview.suggested_workflow).toBeNull();
+    });
+
+    it('merges live ai-service tracker atoms into the PARSING preview', async () => {
+      const session = await sessions.createSession(TENANT, 'alice');
+      // Simulate ai-service mid-parse: 2 of 3 files done, 4 atoms accumulated.
+      aiClient.getParseStatus.mockResolvedValueOnce({
+        session_id: session.id,
+        status: 'PARSING',
+        progress: {
+          stage: 'extracted 4 atoms (2/3 files)',
+          files_total: 3,
+          files_processed: 2,
+          atoms_so_far: 4,
+          percent: 60,
+        },
+        result: {
+          atoms_preview: {
+            total: 4,
+            by_type: { functional: 3, nfr: 1 },
+            by_priority: { MUST: 3, SHOULD: 1 },
+            low_confidence_count: 1,
+            sample: [
+              {
+                id: 'REQ-F-001',
+                type: 'functional',
+                priority: 'MUST',
+                category: 'auth',
+                source_file: 'rfp.pdf',
+                body_md: 'SSO required',
+                confidence: 0.92,
+                split_recommended: false,
+              },
+            ],
+          },
+          sources_preview: [
+            {
+              file_id: 'rfp',
+              name: 'rfp.pdf',
+              role: 'rfp',
+              language: 'en',
+              page_count: 12,
+              atoms_extracted: 3,
+              original_name: 'rfp.pdf',
+              mime: 'application/pdf',
+              parsed_to: 'sources/01-rfp.md',
+            },
+            {
+              file_id: 'qa',
+              name: 'qa.pdf',
+              role: 'qa',
+              language: 'en',
+              page_count: 2,
+              atoms_extracted: 1,
+              original_name: 'qa.pdf',
+              mime: 'application/pdf',
+              parsed_to: 'sources/02-qa.md',
+            },
+          ],
+        },
+      });
+
+      const preview = await controller.preview(session.id);
+      expect(preview.status).toBe('PARSING');
+      expect(preview.atoms_preview.total).toBe(4);
+      expect(preview.atoms_preview.by_type).toEqual({ functional: 3, nfr: 1 });
+      expect(preview.atoms_preview.sample).toHaveLength(1);
+      expect(preview.sources_preview).toHaveLength(2);
+      expect(preview.progress?.stage).toMatch(/extracted 4 atoms/);
+      expect(preview.progress?.percent).toBe(60);
+      expect(aiClient.getParseStatus).toHaveBeenCalledWith(session.id);
+    });
+
+    it('falls back to empty atoms when tracker fetch throws', async () => {
+      const session = await sessions.createSession(TENANT, 'alice');
+      // Default mock rejects → controller swallows → empty Postgres shape.
+      const preview = await controller.preview(session.id);
+      expect(preview.status).toBe('PARSING');
+      expect(preview.atoms_preview.total).toBe(0);
+      expect(preview.progress?.stage).toBe('parsing');
+    });
+
+    it('does not call ai-service tracker for non-PARSING sessions', async () => {
+      const session = await sessions.createSession(TENANT, 'alice');
+      session.status = 'READY';
+      session.atoms = [];
+      await sessionRepo.save(session);
+      const preview = await controller.preview(session.id);
+      expect(preview.status).toBe('READY');
+      expect(aiClient.getParseStatus).not.toHaveBeenCalled();
     });
 
     it('throws 404 for an unknown sid', async () => {

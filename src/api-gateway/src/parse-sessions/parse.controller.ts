@@ -180,7 +180,21 @@ export class ParseController {
     @Param('sid', new ParseUUIDPipe()) sid: string,
   ): Promise<PreviewResponseDto> {
     const session = await this.sessions.getById(sid);
-    return this.toPreviewResponse(session);
+    let tracker: Awaited<ReturnType<AiServiceClient['getParseStatus']>> | null =
+      null;
+    if (session.status === 'PARSING') {
+      // Merge ai-service in-memory tracker so the frontend's 2 s preview
+      // poll sees atoms accumulate while the background parse runs file by
+      // file. Tracker miss / network error is non-fatal — we just fall back
+      // to the empty Postgres shape; the next poll round will retry.
+      try {
+        tracker = await this.aiClient.getParseStatus(sid);
+      } catch (err) {
+        // No-op: keep PARSING + empty preview. Logging at debug to avoid
+        // spamming on the 2 s polling cadence.
+      }
+    }
+    return this.toPreviewResponse(session, tracker);
   }
 
   /**
@@ -216,10 +230,24 @@ export class ParseController {
 
   /**
    * Build the §3.6 PreviewResponse from an entity. Defensive against
-   * mid-parse polls (status=PARSING with empty atoms) — returns empty
-   * counts + nullable bid_card so the frontend can render a spinner.
+   * mid-parse polls (status=PARSING with empty atoms) — when ``tracker``
+   * is supplied we merge its live atoms_preview / sources_preview /
+   * progress so the frontend sees atoms grow while the background parse
+   * walks file by file.
    */
-  private toPreviewResponse(session: ParseSession): PreviewResponseDto {
+  private toPreviewResponse(
+    session: ParseSession,
+    tracker: {
+      progress?: {
+        stage?: string;
+        percent?: number;
+        files_total?: number;
+        files_processed?: number;
+        atoms_so_far?: number;
+      };
+      result?: Record<string, unknown>;
+    } | null,
+  ): PreviewResponseDto {
     const card = (session.suggestedBidCard ?? null) as
       | (SuggestedBidCardPreview & Record<string, unknown>)
       | null;
@@ -270,10 +298,46 @@ export class ParseController {
           ? 'ABANDONED'
           : 'AWAITING_CONFIRM';
 
-    const progress =
-      session.status === 'PARSING'
-        ? { stage: 'parsing', percent: atomsRaw.length === 0 ? 10 : 60 }
-        : undefined;
+    let atoms_preview = {
+      total: atomsRaw.length,
+      by_type: byType,
+      by_priority: byPriority,
+      low_confidence_count: lowConf,
+      sample,
+    };
+    let sources_preview_final = sources_preview;
+    let progress: { stage: string; percent: number } | undefined;
+
+    if (session.status === 'PARSING') {
+      const trackerProgress = tracker?.progress;
+      const trackerResult = (tracker?.result ?? {}) as Record<string, unknown>;
+      const trackerAtomsPreview =
+        (trackerResult.atoms_preview as typeof atoms_preview | undefined) ??
+        null;
+      const trackerSources =
+        (trackerResult.sources_preview as SourcePreviewItem[] | undefined) ??
+        null;
+
+      // Prefer the live tracker payload — it carries atoms accumulated so
+      // far. Fall back to the Postgres atoms only if the tracker is
+      // unavailable (network blip during the 2 s poll).
+      if (trackerAtomsPreview && trackerAtomsPreview.total > 0) {
+        atoms_preview = trackerAtomsPreview;
+      }
+      if (trackerSources && trackerSources.length > 0) {
+        sources_preview_final = trackerSources;
+      }
+
+      const stage = String(trackerProgress?.stage ?? 'parsing');
+      const trackerPct = trackerProgress?.percent;
+      const computedPct =
+        typeof trackerPct === 'number'
+          ? trackerPct
+          : atoms_preview.total === 0
+            ? 10
+            : 60;
+      progress = { stage, percent: computedPct };
+    }
 
     return {
       session_id: session.id,
@@ -302,14 +366,8 @@ export class ParseController {
         summary_md: session.summaryMd ?? '',
         open_questions,
       },
-      atoms_preview: {
-        total: atomsRaw.length,
-        by_type: byType,
-        by_priority: byPriority,
-        low_confidence_count: lowConf,
-        sample,
-      },
-      sources_preview,
+      atoms_preview,
+      sources_preview: sources_preview_final,
       conflicts_detected,
       suggested_workflow,
       current_state,
