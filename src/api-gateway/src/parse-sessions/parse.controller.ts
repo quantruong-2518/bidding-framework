@@ -6,6 +6,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -190,8 +191,20 @@ export class ParseController {
       try {
         tracker = await this.aiClient.getParseStatus(sid);
       } catch (err) {
-        // No-op: keep PARSING + empty preview. Logging at debug to avoid
-        // spamming on the 2 s polling cadence.
+        // ai-service restart wipes the in-memory tracker. If the session is
+        // older than the grace window AND ai-service has no record, declare
+        // the parse lost so the frontend leaves the indefinite 10% loop.
+        if (err instanceof NotFoundException) {
+          const ageMs = Date.now() - new Date(session.createdAt).getTime();
+          if (ageMs > 30_000) {
+            session = await this.sessions.setStatus(
+              sid,
+              'FAILED',
+              'parse tracker lost (ai-service restarted) — please re-upload',
+            );
+          }
+        }
+        // Other errors (5xx, timeout): keep PARSING + retry next poll.
       }
       // Sync ai-service terminal states into Postgres so the row stops
       // being PARSING the moment the background parse finishes — without
