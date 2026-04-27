@@ -204,7 +204,7 @@ services:
       BID_PROJECTION_CONSUMER_BLOCK_MS: ${BID_PROJECTION_CONSUMER_BLOCK_MS:-5000}
       BID_PROJECTION_CONSUMER_DISABLED: ${BID_PROJECTION_CONSUMER_DISABLED:-}
     ports:
-      - "3000:3000"
+      - "4000:3000"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
       interval: 30s
@@ -351,8 +351,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:3000
-        NEXT_PUBLIC_WS_URL: ws://localhost:3000
+        NEXT_PUBLIC_API_URL: http://localhost:4000
+        NEXT_PUBLIC_WS_URL: ws://localhost:4000
         NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
     container_name: bid-frontend
     restart: unless-stopped
@@ -360,8 +360,8 @@ services:
       api-gateway:
         condition: service_healthy
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:3000
-      NEXT_PUBLIC_WS_URL: ws://localhost:3000
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_WS_URL: ws://localhost:4000
       NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
       NEXT_PUBLIC_KEYCLOAK_REALM: bidding
       NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: bidding-frontend
