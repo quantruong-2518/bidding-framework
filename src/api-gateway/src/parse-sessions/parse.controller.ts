@@ -179,7 +179,7 @@ export class ParseController {
   async preview(
     @Param('sid', new ParseUUIDPipe()) sid: string,
   ): Promise<PreviewResponseDto> {
-    const session = await this.sessions.getById(sid);
+    let session = await this.sessions.getById(sid);
     let tracker: Awaited<ReturnType<AiServiceClient['getParseStatus']>> | null =
       null;
     if (session.status === 'PARSING') {
@@ -192,6 +192,27 @@ export class ParseController {
       } catch (err) {
         // No-op: keep PARSING + empty preview. Logging at debug to avoid
         // spamming on the 2 s polling cadence.
+      }
+      // Sync ai-service terminal states into Postgres so the row stops
+      // being PARSING the moment the background parse finishes — without
+      // this, polling never converges (tracker is in-memory only).
+      if (tracker?.status === 'READY' && tracker.result) {
+        session = await this.sessions.setResult(sid, {
+          atoms: (tracker.result.atoms as unknown[]) ?? [],
+          anchorMd: (tracker.result.anchor_md as string) ?? '',
+          summaryMd: (tracker.result.summary_md as string) ?? '',
+          openQuestions: (tracker.result.open_questions as unknown[]) ?? [],
+          conflicts: (tracker.result.conflicts as unknown[]) ?? [],
+          manifest:
+            (tracker.result.manifest as Record<string, unknown>) ?? null,
+          flipToReady: true,
+        });
+      } else if (tracker?.status === 'FAILED') {
+        session = await this.sessions.setStatus(
+          sid,
+          'FAILED',
+          tracker.error ?? 'parse failed in ai-service',
+        );
       }
     }
     return this.toPreviewResponse(session, tracker);
