@@ -96,7 +96,7 @@ class LLMRequest(BaseModel):
     temperature: float = 0.3
     cache_policy: Literal["ephemeral", "none"] = "ephemeral"
     response_schema: type[BaseModel] | None = None
-    timeout_s: float = 30.0
+    timeout_s: float = 90.0
     metadata: dict[str, Any] = Field(default_factory=dict)
     # Optional Langfuse linkage. Caller passes the trace_id (= bid_id) and a
     # human-readable node name; the adapter forwards them to the tracer.

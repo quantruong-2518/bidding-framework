@@ -314,6 +314,7 @@ async def extract_atoms(
             default_tier=_TIER,
             default_max_tokens=2048,
             default_temperature=0.2,
+            default_timeout_s=120.0,
             trace_id=bid_id_for_trace,
         )
         chunks = _split_chunks(file.raw_text or "")

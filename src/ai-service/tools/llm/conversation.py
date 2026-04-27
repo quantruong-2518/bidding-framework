@@ -89,6 +89,7 @@ class LLMConversation:
     default_max_tokens: int = 2048
     default_temperature: float = 0.3
     default_cache_policy: Literal["ephemeral", "none"] = "ephemeral"
+    default_timeout_s: float | None = None
     # Trace propagation — when set, every turn's underlying LLMRequest
     # carries this trace_id so Langfuse links them under one trace.
     trace_id: str | None = None
@@ -225,17 +226,20 @@ class LLMConversation:
         next_messages = list(self.messages) + [
             LLMMessage(role="user", content=user_content)
         ]
-        return LLMRequest(
-            messages=next_messages,
-            tier=tier,
-            model=model,
-            max_tokens=max_tokens if max_tokens is not None else self.default_max_tokens,
-            temperature=temperature if temperature is not None else self.default_temperature,
-            cache_policy=cache_policy or self.default_cache_policy,
-            response_schema=response_schema,
-            trace_id=self.trace_id,
-            node_name=node_name,
-        )
+        kwargs: dict[str, Any] = {
+            "messages": next_messages,
+            "tier": tier,
+            "model": model,
+            "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
+            "temperature": temperature if temperature is not None else self.default_temperature,
+            "cache_policy": cache_policy or self.default_cache_policy,
+            "response_schema": response_schema,
+            "trace_id": self.trace_id,
+            "node_name": node_name,
+        }
+        if self.default_timeout_s is not None:
+            kwargs["timeout_s"] = self.default_timeout_s
+        return LLMRequest(**kwargs)
 
     def _record_turn(
         self,
