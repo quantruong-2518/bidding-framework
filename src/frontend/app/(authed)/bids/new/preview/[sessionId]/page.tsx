@@ -4,12 +4,14 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
+import { useMutation } from '@tanstack/react-query';
 import { Badge } from '@/components/ui/badge';
-import { buttonVariants } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { BidPreviewPanel } from '@/components/bids/bid-preview-panel';
 import { useParseSession } from '@/lib/hooks/use-parse-session';
+import { abandon } from '@/lib/api/parse-sessions';
 
 interface PageProps {
   params: { sessionId: string };
@@ -51,6 +53,7 @@ export default function PreviewParsePage({ params }: PageProps): React.ReactElem
       <PendingShell
         heading="Parsing in progress"
         progress={data.progress}
+        sessionId={params.sessionId}
       />
     );
   }
@@ -98,10 +101,17 @@ export default function PreviewParsePage({ params }: PageProps): React.ReactElem
 function PendingShell({
   heading,
   progress,
+  sessionId,
 }: {
   heading: string;
   progress?: { stage: string; percent: number };
+  sessionId?: string;
 }): React.ReactElement {
+  const router = useRouter();
+  const abandonMut = useMutation({
+    mutationFn: () => abandon(sessionId ?? ''),
+    onSuccess: () => router.replace('/bids/new'),
+  });
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-6" data-testid="preview-pending">
       <Card>
@@ -119,6 +129,19 @@ function PendingShell({
           )}
           <Skeleton className="h-32 w-full" />
           <Skeleton className="h-32 w-full" />
+          {sessionId && (
+            <div className="flex justify-end pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => abandonMut.mutate()}
+                disabled={abandonMut.isPending}
+                data-testid="preview-cancel"
+              >
+                {abandonMut.isPending ? 'Cancelling…' : 'Cancel parse'}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </main>
