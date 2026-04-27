@@ -77,7 +77,9 @@ export class ObjectStoreService {
         forcePathStyle: backend === 'minio',
       };
       if (this.endpoint) {
-        opts.endpoint = this.endpoint;
+        opts.endpoint = /^https?:\/\//i.test(this.endpoint)
+          ? this.endpoint
+          : `http://${this.endpoint}`;
       }
       if (accessKeyId && secretAccessKey) {
         opts.credentials = { accessKeyId, secretAccessKey };
