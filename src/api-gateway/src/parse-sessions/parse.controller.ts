@@ -150,11 +150,11 @@ export class ParseController {
 
     try {
       await this.aiClient.startParse({
-        session_id: session.id,
+        parse_session_id: session.id,
         tenant_id: body.tenant_id,
         user_id: userId,
         files: startFiles,
-        language: body.language,
+        lang: body.language,
       });
     } catch (err) {
       // ai-service refused — mark FAILED so the user sees the parser error

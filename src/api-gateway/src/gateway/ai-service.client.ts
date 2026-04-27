@@ -18,9 +18,9 @@ import { firstValueFrom } from 'rxjs';
  * `/workflows/bid/*`) so the surface stays narrow per route family.
  *
  * Endpoints covered:
- *   - `POST /workflows/parse/start`            — kick off LLM parse pipeline
- *   - `GET  /workflows/parse/:sid/status`      — poll progress
- *   - `POST /workflows/parse/:sid/materialize` — write vault tree post-confirm
+ *   - `POST /workflows/bid/parse/start`            — kick off LLM parse pipeline
+ *   - `GET  /workflows/bid/parse/:sid/status`      — poll progress
+ *   - `POST /workflows/bid/parse/:sid/materialize` — write vault tree post-confirm
  *
  * Decision 9 (parse runs OUTSIDE Temporal) means these calls are plain
  * REST round-trips; the materialise endpoint is idempotent on a per-bid
@@ -41,11 +41,11 @@ export interface StartParseFile {
 }
 
 export interface StartParseRequest {
-  session_id: string;
+  parse_session_id: string;
   tenant_id: string;
   user_id: string;
   files: StartParseFile[];
-  language?: 'en' | 'vi';
+  lang?: 'en' | 'vi';
 }
 
 export interface StartParseResponse {
@@ -104,13 +104,13 @@ export class AiServiceClient {
   }
 
   /**
-   * POST /workflows/parse/start — kicks off the async parse pipeline. The
+   * POST /workflows/bid/parse/start — kicks off the async parse pipeline. The
    * session id is allocated by api-gateway (Postgres write happens *first*,
    * then this RPC), so a partial network failure leaves a stale PARSING row
    * the TTL cleanup will eventually drop.
    */
   async startParse(req: StartParseRequest): Promise<StartParseResponse> {
-    const url = `${this.baseUrl()}/workflows/parse/start`;
+    const url = `${this.baseUrl()}/workflows/bid/parse/start`;
     return this.request<StartParseResponse>(
       'POST',
       url,
@@ -118,14 +118,14 @@ export class AiServiceClient {
     );
   }
 
-  /** GET /workflows/parse/:sid/status. Used by progress polling + tests. */
+  /** GET /workflows/bid/parse/:sid/status. Used by progress polling + tests. */
   async getParseStatus(sid: string): Promise<ParseStatusResponse> {
-    const url = `${this.baseUrl()}/workflows/parse/${encodeURIComponent(sid)}/status`;
+    const url = `${this.baseUrl()}/workflows/bid/parse/${encodeURIComponent(sid)}/status`;
     return this.request<ParseStatusResponse>('GET', url);
   }
 
   /**
-   * POST /workflows/parse/:sid/materialize — invoked by the confirm tx
+   * POST /workflows/bid/parse/:sid/materialize — invoked by the confirm tx
    * (after bids row insert + MinIO rename succeed). The ai-service writes
    * the vault tree atomically (temp dir + rename per Decision 11) and
    * returns the path so the response can include it.
@@ -134,7 +134,7 @@ export class AiServiceClient {
     sid: string,
     req: MaterializeRequest,
   ): Promise<MaterializeResponse> {
-    const url = `${this.baseUrl()}/workflows/parse/${encodeURIComponent(sid)}/materialize`;
+    const url = `${this.baseUrl()}/workflows/bid/parse/${encodeURIComponent(sid)}/materialize`;
     return this.request<MaterializeResponse>(
       'POST',
       url,
